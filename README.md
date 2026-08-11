@@ -22,16 +22,6 @@ much easier problem than diarizing a single mixed track.
 
 ## Install
 
-Needs `ffmpeg` and PipeWire or PulseAudio, plus the `pactl` CLI.
-
-On Debian/Ubuntu, `pactl` ships in a separate `pulseaudio-utils` package that is
-**not** pulled in automatically by `pipewire-pulse`, so a PipeWire-only install can
-be missing it:
-
-```bash
-sudo apt install pulseaudio-utils
-```
-
 ```bash
 uvx --index https://download.pytorch.org/whl/cpu sttop
 ```
@@ -40,6 +30,26 @@ The `--index` flag matters. Speaker labelling needs torch, and the stock PyPI to
 bundles CUDA — about 2.5GB of nvidia wheels that buy nothing here, since
 CTranslate2 has no ROCm backend and CPU inference keeps up with live audio fine.
 The flag points torch at the CPU builds and falls back to PyPI for everything else.
+
+That is the whole install on Linux. There is nothing to `apt install` first: if
+the machine has no `ffmpeg`, sttop fetches a static one into its own data
+directory on first run, and `pactl` is optional — the audio server resolves the
+default mic and monitor itself, so `pactl` is only needed to pick a source *by
+name*. Run `sttop doctor` to see what it found.
+
+**macOS** records the microphone with no setup at all. System audio is the one
+thing Apple gives you no way to capture: there is no equivalent of a PulseAudio
+monitor, so it needs a loopback device.
+
+```bash
+brew install blackhole-2ch
+```
+
+Then in Audio MIDI Setup create a Multi-Output Device containing both your
+speakers and BlackHole, and select it as the system output — that is what lets
+you keep hearing the call while sttop records it. sttop picks BlackHole up
+automatically once it exists. Until then it records the mic only, which is your
+side of the conversation, and says so rather than refusing to start.
 
 To install it permanently rather than running it ad hoc:
 
@@ -61,6 +71,7 @@ uv run sttop                       # record with defaults
 uv run sttop -t "standup"          # title the session (used in the filename)
 uv run sttop --backend whisper -m small
 uv run sttop devices --test        # list audio sources, record 1s from each
+uv run sttop doctor                # check the audio deps, explain anything missing
 uv run sttop sessions              # list past transcripts
 uv run sttop config                # write ~/.config/sttop/config.toml
 uv run sttop theme                 # show the detected terminal colour scheme
@@ -97,9 +108,9 @@ line — kill it mid-meeting and the transcript so far is already on disk.
 ## How it works
 
 ```
-ffmpeg -f pulse (mic)      ─┐
+ffmpeg (mic)               ─┐
                             ├─ webrtcvad segmenter ─→ queue ─→ parakeet ─→ ecapa ─→ journal.md
-ffmpeg -f pulse (monitor)  ─┘
+ffmpeg (system output)     ─┘
 ```
 
 Audio is cut into utterances by voice-activity detection (a segment closes after
@@ -152,8 +163,8 @@ means "you decide" wherever a default is picked for you.
 sessions_dir = "~/.local/share/sttop/sessions"
 
 [audio]
-mic_source = ""        # substring match against pactl source names; blank = default
-system_source = ""     # blank = monitor of the default sink
+mic_source = ""        # substring match against source names; blank = default
+system_source = ""     # blank = the default monitor (or BlackHole on macOS)
 save_wav = false
 
 [vad]

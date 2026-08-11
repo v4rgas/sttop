@@ -28,7 +28,8 @@ class ConfigError(ValueError):
 class AudioConfig:
     #: PulseAudio/PipeWire source name. None resolves to the system default source.
     mic_source: str | None = None
-    #: None resolves to the monitor of the default sink (i.e. whatever you hear).
+    #: None resolves to the monitor of the default sink (i.e. whatever you hear),
+    #: or on macOS to a loopback device such as BlackHole if one is installed.
     system_source: str | None = None
     #: Keep the raw 16kHz mono capture alongside the transcript.
     save_wav: bool = False

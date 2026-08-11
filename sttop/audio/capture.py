@@ -1,4 +1,4 @@
-"""Capture a PulseAudio/PipeWire source as 16 kHz mono PCM via ffmpeg.
+"""Capture one audio source as 16 kHz mono PCM.
 
 ffmpeg is used instead of a PortAudio binding because monitor sources (the
 "what you hear" side of the capture) are exposed cleanly by the pulse backend,
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import shutil
 import subprocess
 import wave
 from collections import deque
@@ -23,7 +22,8 @@ from pathlib import Path
 import numpy as np
 
 from .. import FRAME_BYTES, SAMPLE_RATE
-from .devices import AudioError
+from .devices import AudioError, CaptureSpec
+from .ffmpeg import FFmpegMissing, ffmpeg_bin
 
 FrameCallback = Callable[[bytes], None]
 ErrorCallback = Callable[[str], None]
@@ -40,16 +40,25 @@ _ATTACK = 0.5
 _RELEASE = 0.15
 
 
-def _ffmpeg_command(pulse_source: str, *extra: str) -> list[str]:
-    """The one true ffmpeg invocation: one pulse source in, 16 kHz mono s16le
-    out on stdout. `extra` is inserted between the input and output options."""
+def build_command(spec: CaptureSpec, *extra: str) -> list[str]:
+    """The command that writes this source to stdout as 16 kHz mono s16le.
+
+    `extra` is inserted between the input and output options."""
+    if spec.backend not in ("pulse", "avfoundation"):
+        raise AudioError(f"unknown capture backend {spec.backend!r}")
+
+    try:
+        binary = ffmpeg_bin()
+    except FFmpegMissing as exc:
+        raise AudioError(str(exc)) from exc
+
     return [
-        "ffmpeg",
+        binary,
         "-hide_banner",
         "-loglevel", "error",
         "-nostdin",
-        "-f", "pulse",
-        "-i", pulse_source,
+        "-f", spec.backend,
+        "-i", spec.device,
         *extra,
         "-ac", "1",
         "-ar", str(SAMPLE_RATE),
@@ -68,13 +77,13 @@ class SourceCapture:
     def __init__(
         self,
         label: str,
-        pulse_source: str,
+        spec: CaptureSpec,
         on_frame: FrameCallback,
         on_error: ErrorCallback | None = None,
         wav_path: Path | None = None,
     ) -> None:
         self.label = label
-        self.pulse_source = pulse_source
+        self.spec = spec
         self._on_frame = on_frame
         self._on_error = on_error
         self._wav_path = wav_path
@@ -91,11 +100,8 @@ class SourceCapture:
         self.frames_seen: int = 0
 
     async def start(self) -> None:
-        if not shutil.which("ffmpeg"):
-            raise AudioError("ffmpeg not found on PATH")
-
         self._proc = await asyncio.create_subprocess_exec(
-            *_ffmpeg_command(self.pulse_source),
+            *build_command(self.spec),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -211,10 +217,10 @@ class SourceCapture:
         self.level = 0.0
 
 
-def check_source(pulse_source: str, seconds: float = 1.0) -> float:
+def check_source(spec: CaptureSpec, seconds: float = 1.0) -> float:
     """Record briefly and report peak level - used by `sttop devices --test`."""
     proc = subprocess.run(
-        _ffmpeg_command(pulse_source, "-t", str(seconds)),
+        build_command(spec, "-t", str(seconds)),
         capture_output=True,
         timeout=seconds + 10,
     )

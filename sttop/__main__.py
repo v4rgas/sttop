@@ -50,6 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--test", action="store_true", help="record 1s from each and report levels"
     )
 
+    command("doctor", "check audio deps and explain anything missing")
     command("sessions", "list recorded sessions")
     command("theme", "show the detected terminal colour scheme")
     command("config", "write a default config file")
@@ -88,27 +89,92 @@ def with_default_command(argv: list[str], commands: set[str]) -> list[str]:
 def cmd_devices(config: Config, args) -> int:
     from .audio import capture, devices
 
-    try:
-        sources = devices.list_sources()
-        mic = devices.resolve(config.audio.mic_source, monitor=False)
-        system = devices.resolve(config.audio.system_source, monitor=True)
-    except devices.AudioError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    def selected(requested, *, monitor: bool):
+        """The resolved spec, or the reason there is none. Never raises: one
+        broken half must not hide the listing that explains why."""
+        try:
+            return devices.resolve(requested, monitor=monitor), None
+        except devices.AudioError as exc:
+            return None, str(exc)
+
+    mic, mic_error = selected(config.audio.mic_source, monitor=False)
+    system, sys_error = selected(config.audio.system_source, monitor=True)
+    if mic is None and system is None:
+        print(f"error: {mic_error}", file=sys.stderr)
         return 1
 
-    print(f"mic     -> {mic}")
-    print(f"system  -> {system}\n")
+    print(f"mic     -> {mic.label if mic else f'unavailable - {mic_error}'}")
+    print(f"system  -> {system.label if system else f'unavailable - {sys_error}'}\n")
+
+    try:
+        sources = devices.list_sources()
+    except devices.AudioError as exc:
+        print(f"cannot list sources: {exc}", file=sys.stderr)
+        sources = []
+
     for source in sources:
-        role = "mic" if source.name == mic else "sys" if source.name == system else "   "
+        role = "mic" if mic and source.name == mic.label else (
+            "sys" if system and source.name == system.label else "   "
+        )
         kind = "monitor" if source.is_monitor else "input  "
         line = f"{role} {kind} {source.state:<10} {source.name}"
         if args.test:
             try:
-                peak = capture.check_source(source.name, seconds=1.0)
+                spec = _spec_for(devices, source)
+                peak = capture.check_source(spec, seconds=1.0)
                 line += f"   peak {peak:.3f}" + ("" if peak > 0.001 else "  (silent)")
             except Exception as exc:
                 line += f"   [failed: {str(exc).splitlines()[0][:40]}]"
         print(line)
+
+    if system is not None and system.label not in {s.name for s in sources}:
+        print(f"\nsystem audio via {system.backend}: {system.device}")
+    elif system is None:
+        print("\nrun `sttop doctor` for how to enable system audio here")
+    return 0
+
+
+def _spec_for(devices, source):
+    """A capture spec for one listed source, in that platform's terms."""
+    if devices.MACOS:
+        return devices.CaptureSpec("avfoundation", f":{source.index}", source.name)
+    return devices.CaptureSpec("pulse", source.name, source.name)
+
+
+#: Printed by `sttop doctor` when macOS has no system-audio source. There is
+#: no Apple-provided monitor device, so this needs a loopback driver.
+_MACOS_SYSTEM_AUDIO_HELP = """
+macOS has no equivalent of a PulseAudio monitor, so system audio needs a
+loopback device:
+
+  brew install blackhole-2ch
+
+Then open Audio MIDI Setup, create a Multi-Output Device containing both your
+speakers and BlackHole, and select it as the system output - that is what
+lets you keep hearing the call while sttop records it. sttop picks BlackHole
+up automatically once it exists; nothing to configure here.
+
+Until then sttop records the microphone only - your side of the call.
+"""
+
+_LINUX_SYSTEM_AUDIO_HELP = """
+System audio comes from the monitor of your default sink. If it is missing,
+check that PipeWire or PulseAudio is running (`systemctl --user status pipewire`).
+`pactl` (Debian/Ubuntu: `sudo apt install pulseaudio-utils`) is optional - it is
+only needed to list sources by name; defaults work without it.
+"""
+
+
+def cmd_doctor(config: Config) -> int:
+    from .audio import devices
+
+    for check, verdict in devices.diagnose():
+        print(f"{check:<16}{verdict}")
+
+    try:
+        devices.resolve(config.audio.system_source, monitor=True)
+    except devices.AudioError:
+        print(_MACOS_SYSTEM_AUDIO_HELP if devices.MACOS else _LINUX_SYSTEM_AUDIO_HELP)
     return 0
 
 
@@ -161,7 +227,9 @@ def cmd_record(config: Config, args) -> int:
     return 0
 
 
-COMMANDS = {"record", "devices", "sessions", "theme", "config"}
+COMMANDS = {
+    "record", "devices", "doctor", "sessions", "theme", "config",
+}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -182,6 +250,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "devices":
         return cmd_devices(config, args)
+    if args.command == "doctor":
+        return cmd_doctor(config)
     if args.command == "sessions":
         return cmd_sessions(config)
     if args.command == "theme":

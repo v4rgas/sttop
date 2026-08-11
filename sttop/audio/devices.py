@@ -1,14 +1,59 @@
-"""PulseAudio/PipeWire source discovery via pactl."""
+"""Audio source discovery, per platform.
+
+Two capture worlds, one interface. On Linux a PulseAudio/PipeWire server hands
+out both the microphone and a *monitor* of whatever is playing, so both halves
+of the two-stream design come from the same place. macOS has no monitor: the
+mic arrives through AVFoundation, and system audio needs a loopback driver
+such as BlackHole to route the output back to an input. Everything below
+exists to hide that difference behind `resolve()`, which hands back a
+`CaptureSpec` the capture layer can spawn.
+
+`pactl` is used on Linux when it is there, for listing and substring matching,
+but is no longer required: the audio server resolves `@DEFAULT_SOURCE@` and
+`@DEFAULT_MONITOR@` itself, so a PipeWire box without `pulseaudio-utils`
+records with defaults instead of failing at startup.
+"""
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
+
+from .ffmpeg import FFmpegMissing, ffmpeg_bin
+
+MACOS = sys.platform == "darwin"
+
+#: Pulse resolves these server-side, so they work with no `pactl` present.
+PULSE_DEFAULT_SOURCE = "@DEFAULT_SOURCE@"
+PULSE_DEFAULT_MONITOR = "@DEFAULT_MONITOR@"
+
+#: Virtual output devices people install to loop system audio back to an input.
+#: Matched case-insensitively against AVFoundation device names.
+_LOOPBACK_HINTS = (
+    "blackhole",
+    "loopback",
+    "soundflower",
+    "vb-cable",
+    "vb-audio",
+    "existential",
+    "multi-output",
+    "aggregate",
+)
 
 
 class AudioError(RuntimeError):
     pass
+
+
+class SystemAudioUnavailable(AudioError):
+    """No way to hear what the machine is playing.
+
+    Its own class because it is survivable: the session can run mic-only,
+    which is worth much more than refusing to start.
+    """
 
 
 @dataclass(frozen=True)
@@ -18,14 +63,40 @@ class Source:
     driver: str
     spec: str
     state: str
+    monitor: bool | None = None
 
     @property
     def is_monitor(self) -> bool:
+        if self.monitor is not None:
+            return self.monitor
         return self.name.endswith(".monitor")
 
 
+@dataclass(frozen=True)
+class CaptureSpec:
+    """How to capture one stream, and what to call it.
+
+    `backend` picks the reader; `device` is that backend's device string;
+    `label` is what the journal header and the UI show.
+    """
+
+    backend: str  # "pulse" | "avfoundation"
+    device: str
+    label: str
+
+    def __str__(self) -> str:
+        return self.label
+
+
+# -- linux / pulseaudio ----------------------------------------------------
+
+
+def have_pactl() -> bool:
+    return shutil.which("pactl") is not None
+
+
 def _pactl(*args: str) -> str:
-    if not shutil.which("pactl"):
+    if not have_pactl():
         raise AudioError("pactl not found - sttop needs PipeWire or PulseAudio")
     try:
         out = subprocess.run(
@@ -38,7 +109,7 @@ def _pactl(*args: str) -> str:
     return out.stdout.strip()
 
 
-def list_sources() -> list[Source]:
+def _pulse_sources() -> list[Source]:
     sources = []
     for line in _pactl("list", "short", "sources").splitlines():
         parts = line.split("\t")
@@ -51,21 +122,88 @@ def list_sources() -> list[Source]:
 
 def default_sink_monitor() -> str:
     """The monitor source carrying whatever is currently playing on this machine."""
+    if not have_pactl():
+        return PULSE_DEFAULT_MONITOR
     sink = _pactl("get-default-sink")
     if not sink or sink == "@DEFAULT_SINK@":
-        raise AudioError("no default sink - cannot capture system audio")
+        return PULSE_DEFAULT_MONITOR
     return f"{sink}.monitor"
 
 
 def default_source() -> str:
     """The default recording source, i.e. the active microphone."""
+    if not have_pactl():
+        return PULSE_DEFAULT_SOURCE
     source = _pactl("get-default-source")
     if not source or source == "@DEFAULT_SOURCE@":
-        raise AudioError("no default source - cannot capture the microphone")
+        return PULSE_DEFAULT_SOURCE
     return source
 
 
-def resolve(requested: str | None, *, monitor: bool) -> str:
+# -- macos / avfoundation ---------------------------------------------------
+
+_AVF_AUDIO_HEADER = "AVFoundation audio devices:"
+_AVF_DEVICE = re.compile(r"\[(\d+)\]\s+(.+?)\s*$")
+
+
+def _avfoundation_sources() -> list[Source]:
+    """Parse `ffmpeg -f avfoundation -list_devices true`.
+
+    ffmpeg prints the list to stderr and then exits non-zero, having been
+    asked to open a device it was never given - so the exit status says
+    nothing and only the text matters.
+    """
+    proc = subprocess.run(
+        [ffmpeg_bin(), "-hide_banner", "-nostdin",
+         "-f", "avfoundation", "-list_devices", "true", "-i", ""],
+        capture_output=True, text=True, timeout=15,
+    )
+    sources: list[Source] = []
+    in_audio = False
+    for raw in proc.stderr.splitlines():
+        line = raw.split("] ", 1)[-1].strip()
+        if line.endswith("devices:"):
+            in_audio = line.endswith(_AVF_AUDIO_HEADER)
+            continue
+        match = _AVF_DEVICE.match(line) if in_audio else None
+        if match:
+            index, name = int(match.group(1)), match.group(2)
+            sources.append(
+                Source(index, name, "avfoundation", "", "AVAILABLE",
+                       monitor=_is_loopback(name))
+            )
+    return sources
+
+
+def _is_loopback(name: str) -> bool:
+    lowered = name.lower()
+    return any(hint in lowered for hint in _LOOPBACK_HINTS)
+
+
+def _mac_system_spec() -> CaptureSpec:
+    loopback = [s for s in _avfoundation_sources() if s.is_monitor]
+    if loopback:
+        chosen = loopback[0]
+        return CaptureSpec("avfoundation", f":{chosen.index}", chosen.name)
+
+    raise SystemAudioUnavailable(
+        "no loopback device found - macOS cannot capture system audio without "
+        "one. Run `sttop doctor` for the two commands that set it up."
+    )
+
+
+# -- platform-neutral API --------------------------------------------------
+
+
+def list_sources() -> list[Source]:
+    if MACOS:
+        return _avfoundation_sources()
+    if not have_pactl():
+        return []  # defaults still work; there is just nothing to enumerate
+    return _pulse_sources()
+
+
+def resolve(requested: str | None, *, monitor: bool) -> CaptureSpec:
     """Resolve a configured source name, falling back to the sensible default.
 
     A requested name may be a full source name or a unique substring of one,
@@ -76,15 +214,53 @@ def resolve(requested: str | None, *, monitor: bool) -> str:
     baffling way to punish someone for writing `mic_source = ""`.
     """
     if requested is None or not requested.strip():
-        return default_sink_monitor() if monitor else default_source()
+        return _default_spec(monitor=monitor)
 
-    names = [s.name for s in list_sources()]
-    if requested in names:
-        return requested
+    matched = _match(requested)
+    if MACOS:
+        return CaptureSpec("avfoundation", f":{matched.index}", matched.name)
+    return CaptureSpec("pulse", matched.name, matched.name)
 
-    matches = [n for n in names if requested in n]
+
+def _default_spec(*, monitor: bool) -> CaptureSpec:
+    if MACOS:
+        if monitor:
+            return _mac_system_spec()
+        return CaptureSpec("avfoundation", ":default", "default input")
+    name = default_sink_monitor() if monitor else default_source()
+    label = "default monitor" if name == PULSE_DEFAULT_MONITOR else name
+    label = "default input" if name == PULSE_DEFAULT_SOURCE else label
+    return CaptureSpec("pulse", name, label)
+
+
+def _match(requested: str) -> Source:
+    sources = list_sources()
+    exact = [s for s in sources if s.name == requested]
+    if exact:
+        return exact[0]
+
+    matches = [s for s in sources if requested.lower() in s.name.lower()]
     if len(matches) == 1:
         return matches[0]
     if not matches:
         raise AudioError(f"no audio source matching {requested!r}")
-    raise AudioError(f"{requested!r} is ambiguous, matches: {', '.join(matches)}")
+    names = ", ".join(s.name for s in matches)
+    raise AudioError(f"{requested!r} is ambiguous, matches: {names}")
+
+
+def diagnose() -> list[tuple[str, str]]:
+    """(check, verdict) rows for `sttop doctor`. Never raises."""
+    from . import ffmpeg as ffmpeg_mod
+
+    rows = [("platform", sys.platform), ("ffmpeg", ffmpeg_mod.describe())]
+    if not MACOS:
+        rows.append(
+            ("pactl", shutil.which("pactl") or "not found (defaults still work)")
+        )
+    for label, monitor in (("mic", False), ("system", True)):
+        try:
+            spec = resolve(None, monitor=monitor)
+            rows.append((label, f"{spec.label}  [{spec.backend} {spec.device}]"))
+        except (AudioError, FFmpegMissing) as exc:
+            rows.append((label, f"unavailable - {exc}"))
+    return rows

@@ -17,7 +17,7 @@ from textual.widgets import Footer, Input, Static
 
 from sttop.engine import EngineStatus
 from sttop.journal import Utterance
-from sttop.tui import SttopApp, StatusBar, TranscriptLog
+from sttop.tui import StatusBar, SttopApp, TranscriptLog
 
 DOCS = Path(__file__).resolve().parent.parent / "docs"
 SIZE = (128, 17)

@@ -73,9 +73,12 @@ class Engine:
         self.transcriber: stt.Transcriber | None = None
         self.diarizer: diarize_mod.SpeakerLabeler | None = None
         self.journal: Journal | None = None
-        #: Resolved by prepare(); empty until then.
-        self.mic_source: str = ""
-        self.sys_source: str = ""
+        #: Resolved by prepare(); None until then. `sys_source` stays None when
+        #: the platform has no way to hear itself - see _resolve_sources.
+        self.mic_source: devices.CaptureSpec | None = None
+        self.sys_source: devices.CaptureSpec | None = None
+        #: Raised during prepare(), reported on the loop once start() runs.
+        self._warnings: list[str] = []
 
         self._captures: list[SourceCapture] = []
         self._segmenters: dict[str, Segmenter] = {}
@@ -102,11 +105,23 @@ class Engine:
             self._executor, diarize_mod.build, self.config.diarize
         )
 
-    def _resolve_sources(self) -> tuple[str, str]:
-        return (
-            devices.resolve(self.config.audio.mic_source, monitor=False),
-            devices.resolve(self.config.audio.system_source, monitor=True),
-        )
+    def _resolve_sources(
+        self,
+    ) -> tuple[devices.CaptureSpec, devices.CaptureSpec | None]:
+        """The mic is required; the system stream is not.
+
+        A machine with no monitor source - any stock macOS, mainly - can still
+        record the half of the conversation the microphone hears, and a
+        one-sided transcript beats refusing to start. The mic is different:
+        without it there is nothing to transcribe.
+        """
+        mic = devices.resolve(self.config.audio.mic_source, monitor=False)
+        try:
+            system = devices.resolve(self.config.audio.system_source, monitor=True)
+        except devices.SystemAudioUnavailable as exc:
+            self._warnings.append(f"[system] {exc}")
+            system = None
+        return mic, system
 
     async def start(self, title: str | None = None) -> Path:
         if self._running:
@@ -117,14 +132,22 @@ class Engine:
         self.journal = Journal.create(
             Path(self.config.sessions_dir),
             title,
-            mic_source=self.mic_source,
-            sys_source=self.sys_source,
+            mic_source=str(self.mic_source),
+            sys_source=str(self.sys_source) if self.sys_source else "unavailable",
             backend=self.transcriber.describe,
         )
         self._t0 = time.monotonic()
         self._running = True
 
-        for label, source in ((MIC, self.mic_source), (SYSTEM, self.sys_source)):
+        for message in self._warnings:
+            self._on_error(message)
+        self._warnings.clear()
+
+        streams = [(MIC, self.mic_source)]
+        if self.sys_source is not None:
+            streams.append((SYSTEM, self.sys_source))
+
+        for label, source in streams:
             segmenter = Segmenter(
                 label, self.config.vad, self._queue.put_nowait, clock=self._session_clock
             )

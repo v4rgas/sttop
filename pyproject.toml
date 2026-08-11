@@ -1,6 +1,6 @@
 [project]
 name = "sttop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Live speech-to-text monitor for the terminal. Taps mic + system audio, transcribes and labels speakers in real time, stores everything locally."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,6 +13,7 @@ classifiers = [
     "Intended Audience :: End Users/Desktop",
     "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -27,6 +28,9 @@ dependencies = [
     "webrtcvad-wheels>=2.0.14",
     "platformdirs>=4.0",
     "onnx-asr[cpu,hub]>=0.12",
+    # Fallback ffmpeg, fetched on first use only when the system has none, so
+    # a fresh `uvx sttop` records instead of printing a package name.
+    "static-ffmpeg>=2.7",
     # Speaker identification. Pulls torch, but the CPU wheels keep it manageable
     # and a transcript without speaker labels is not worth much.
     "torch>=2.2",
@@ -57,9 +61,18 @@ name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
+# The CPU index carries linux x86_64 and macOS arm64 wheels but no Intel-mac
+# ones, so an Intel mac stays on PyPI - where the darwin torch build is CPU-only
+# anyway, which is the whole point of the override.
 [tool.uv.sources]
-torch = { index = "pytorch-cpu" }
-torchaudio = { index = "pytorch-cpu" }
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cpu", marker = "sys_platform == 'darwin' and platform_machine == 'arm64'" },
+]
+torchaudio = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cpu", marker = "sys_platform == 'darwin' and platform_machine == 'arm64'" },
+]
 
 [build-system]
 requires = ["hatchling"]
