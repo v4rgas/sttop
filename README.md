@@ -22,7 +22,15 @@ much easier problem than diarizing a single mixed track.
 
 ## Install
 
-Needs `ffmpeg` and PipeWire or PulseAudio (`pactl`).
+Needs `ffmpeg` and PipeWire or PulseAudio, plus the `pactl` CLI.
+
+On Debian/Ubuntu, `pactl` ships in a separate `pulseaudio-utils` package that is
+**not** pulled in automatically by `pipewire-pulse`, so a PipeWire-only install can
+be missing it:
+
+```bash
+sudo apt install pulseaudio-utils
+```
 
 ```bash
 uvx --index https://download.pytorch.org/whl/cpu sttop
