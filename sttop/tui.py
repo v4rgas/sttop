@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -123,6 +124,11 @@ class SttopApp(App):
         try:
             self.journal_path = await self.engine.start(self.session_title)
         except Exception as exc:
+            # A start that failed halfway still left the models loaded, the
+            # executor thread running, the journal open and - if the mic came
+            # up before the failure - an ffmpeg reading from it.
+            with contextlib.suppress(Exception):
+                await self.engine.stop()
             self._fatal(f"{type(exc).__name__}: {exc}")
             return
         self._banner(self._recording_message())

@@ -167,6 +167,18 @@ def _mac_availability() -> str | None:
     return availability()
 
 
+def mac_permission() -> str | None:
+    """Whether ScreenCaptureKit will actually answer, permission and all.
+
+    Costs a round trip, so it is `doctor`'s to call and not `resolve`'s: the
+    recording path learns the same thing from the stream that fails to start,
+    and degrades to mic-only rather than paying for the question every run.
+    """
+    from .screencapture import permission_state
+
+    return permission_state()
+
+
 def _mac_system_spec() -> CaptureSpec:
     reason = _mac_availability()
     if reason is not None:
@@ -230,13 +242,28 @@ def _match(requested: str) -> Source:
     raise AudioError(f"{requested!r} is ambiguous, matches: {names}")
 
 
-def diagnose() -> list[tuple[str, str]]:
-    """(check, verdict) rows for `sttop doctor`. Never raises."""
+#: `diagnose` has not been told the answer and should go and find it.
+UNCHECKED = object()
+
+
+def diagnose(permission=UNCHECKED) -> list[tuple[str, str]]:
+    """(check, verdict) rows for `sttop doctor`. Never raises.
+
+    `permission` lets a caller that has already asked pass the answer in.
+    Asking twice in one report is not just the wasted round trip: the first
+    question is what raises the permission dialog on a fresh machine, and an
+    answer given between the two makes one report contradict itself.
+    """
     from . import ffmpeg as ffmpeg_mod
 
     rows = [("platform", sys.platform), ("ffmpeg", ffmpeg_mod.describe())]
     if MACOS:
-        rows.append(("screencapturekit", _mac_availability() or "available"))
+        # The permission check, not the cheap one: "available" here used to
+        # mean only that the bindings imported, which is true on a machine
+        # where screen recording is denied and no audio will ever arrive.
+        if permission is UNCHECKED:
+            permission = mac_permission()
+        rows.append(("screencapturekit", permission or "available"))
     else:
         rows.append(
             ("pactl", shutil.which("pactl") or "not found (defaults still work)")

@@ -17,16 +17,24 @@ import numpy as np
 from .. import FRAME_BYTES, SAMPLE_RATE
 
 
-def to_mono(samples: np.ndarray, channels: int) -> np.ndarray:
-    """Average interleaved channels down to one.
+def to_mono(samples: np.ndarray, channels: int, *, planar: bool = False) -> np.ndarray:
+    """Average multi-channel audio down to one channel.
 
     Averaging rather than taking the left channel: a call whose remote audio
     is panned - or simply stereo music under a voice - would otherwise lose
     whatever sits on the right.
+
+    Two layouts, because the two sources disagree. ffmpeg writes interleaved
+    frames (LRLRLR). ScreenCaptureKit sets `kAudioFormatFlagIsNonInterleaved`
+    and hands over one plane per channel (LLL...RRR...) - reading that as
+    interleaved does not fail, it comb-filters the first half against the
+    second and transcribes the result.
     """
     if channels <= 1:
         return samples
     usable = len(samples) - (len(samples) % channels)
+    if planar:
+        return samples[:usable].reshape(channels, -1).mean(axis=0)
     return samples[:usable].reshape(-1, channels).mean(axis=1)
 
 

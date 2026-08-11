@@ -167,14 +167,30 @@ only needed to list sources by name; defaults work without it.
 def cmd_doctor(config: Config) -> int:
     from .audio import devices
 
-    for check, verdict in devices.diagnose():
-        print(f"{check:<16}{verdict}")
+    # Asked once, and used for both the row and the advice below it.
+    permission = devices.mac_permission() if devices.MACOS else None
+    for check, verdict in devices.diagnose(permission=permission):
+        print(f"{check:<18}{verdict}")
 
+    if _system_audio_problem(devices, config, permission):
+        print(_MACOS_SYSTEM_AUDIO_HELP if devices.MACOS else _LINUX_SYSTEM_AUDIO_HELP)
+    return 0
+
+
+def _system_audio_problem(devices, config: Config, permission: str | None) -> bool:
+    """Whether to print the how-to-fix-it text below the checks.
+
+    Resolving is not enough on macOS: the source resolves fine when screen
+    recording is denied, and the session then starts mic-only with the one
+    piece of advice that would have helped left unprinted.
+    """
     try:
         devices.resolve(config.audio.system_source, monitor=True)
     except devices.AudioError:
-        print(_MACOS_SYSTEM_AUDIO_HELP if devices.MACOS else _LINUX_SYSTEM_AUDIO_HELP)
-    return 0
+        return True
+    # Linux has no permission to check, and must not be shown the macOS help
+    # however the caller filled this in.
+    return bool(devices.MACOS and permission)
 
 
 def cmd_theme(config: Config) -> int:

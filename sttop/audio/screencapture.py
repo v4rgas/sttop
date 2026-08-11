@@ -23,6 +23,7 @@ import asyncio
 import contextlib
 import platform
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -57,7 +58,11 @@ def macos_version() -> tuple[int, ...]:
 
 
 def availability() -> str | None:
-    """None when system audio can be captured here, else why it cannot."""
+    """None when this machine has the API at all, else why it does not.
+
+    Deliberately cheap - a version test and an import. It runs on the way into
+    every session, and it says nothing about permission: see `permission_state`.
+    """
     version = macos_version()
     if version and version < MIN_MACOS:
         pretty = ".".join(str(part) for part in version)
@@ -69,6 +74,24 @@ def availability() -> str | None:
         import ScreenCaptureKit  # noqa: F401
     except ImportError as exc:
         return f"the ScreenCaptureKit bindings are missing ({exc})"
+    return None
+
+
+def permission_state() -> str | None:
+    """None when ScreenCaptureKit will really hand over audio here.
+
+    `availability` only establishes that the API exists. Screen recording is a
+    permission, and the only way to learn whether it was granted is to ask
+    ScreenCaptureKit a question and see whether it answers - so this costs a
+    round trip and is used by `sttop doctor`, not on the recording path.
+    """
+    reason = availability()
+    if reason is not None:
+        return reason
+    try:
+        _shareable_content()
+    except AudioError as exc:
+        return str(exc)
     return None
 
 
@@ -204,27 +227,37 @@ class ScreenAudioCapture:
         self._loop.call_soon_threadsafe(self._writer.feed, pcm)
 
     def _report_failure(self, detail: str) -> None:
+        """Also called on ScreenCaptureKit's queue, so it hops like the audio.
+
+        The callback ends up drawing on the TUI, and Textual is no more
+        thread-safe than the level meter is.
+        """
         self._writer.level = 0.0
-        if self._on_error is not None:
-            self._on_error(f"[{self.label}] {detail}")
+        if self._on_error is None:
+            return
+        message = f"[{self.label}] {detail}"
+        if self._loop is None:
+            self._on_error(message)
+            return
+        # A stream that fails as the loop is closing has nowhere to report to.
+        with contextlib.suppress(RuntimeError):
+            self._loop.call_soon_threadsafe(self._on_error, message)
 
 
 class _AudioDelegate:
-    """SCStreamOutput + SCStreamDelegate, built at import time on macOS only.
+    """SCStreamOutput + SCStreamDelegate, built on macOS only.
 
-    Defined through objc.python_method-free plain methods on a class created
-    by `objc.createClass`-style subclassing at call time, because the base
-    protocol only exists when the frameworks are importable.
+    Built at call time rather than at import, because the protocols it conforms
+    to only exist once the frameworks are importable.
     """
 
     def __new__(cls, on_pcm, on_error):
         import objc
-        import ScreenCaptureKit as sc  # noqa: F401
         from Foundation import NSObject
 
         klass = _delegate_class(objc, NSObject)
         instance = klass.alloc().init()
-        instance.configure_(on_pcm, on_error)
+        instance.configure(on_pcm, on_error)
         return instance
 
 
@@ -237,16 +270,41 @@ def _delegate_class(objc, NSObject):
     if _DELEGATE_CLASS is not None:
         return _DELEGATE_CLASS
 
-    class SttopAudioDelegate(NSObject):
-        def configure_(self, on_pcm, on_error):
+    import ScreenCaptureKit as sc
+
+    audio_type = sc.SCStreamOutputTypeAudio
+
+    # Conformance is not decoration: it is where pyobjc reads the selectors'
+    # type encodings from. `ofType:` is an NSInteger enum, and without the
+    # protocol pyobjc assumes every argument is an object and hands the
+    # callback a pointer-shaped reading of the number 1.
+    protocols = [
+        objc.protocolNamed("SCStreamOutput"),
+        objc.protocolNamed("SCStreamDelegate"),
+    ]
+
+    class SttopAudioDelegate(NSObject, protocols=protocols):
+        # python_method, because a two-argument Python method would otherwise
+        # be registered as the one-argument selector `configure:` and the
+        # class would fail to build at all.
+        @objc.python_method
+        def configure(self, on_pcm, on_error):
             self._on_pcm = on_pcm
             self._on_error = on_error
+            self._decode_failed = False
 
         def stream_didOutputSampleBuffer_ofType_(self, stream, buffer, kind):
+            if kind != audio_type:
+                return  # no video output is attached, but say so in code
             try:
                 pcm = sample_buffer_to_pcm16(buffer)
             except Exception as exc:  # a bad buffer must not kill the stream
-                self._on_error(f"{type(exc).__name__}: {exc}")
+                # Buffers arrive 50 times a second, and whatever is wrong with
+                # one is wrong with all of them, so this is said once. The
+                # stream ending is reported separately and always.
+                if not self._decode_failed:
+                    self._decode_failed = True
+                    self._on_error(f"{type(exc).__name__}: {exc}")
                 return
             if pcm:
                 self._on_pcm(pcm)
@@ -256,6 +314,47 @@ def _delegate_class(objc, NSObject):
 
     _DELEGATE_CLASS = SttopAudioDelegate
     return _DELEGATE_CLASS
+
+
+#: `kAudioFormatFlagIsNonInterleaved`, which ScreenCaptureKit sets on every
+#: buffer: multi-channel audio arrives as one plane per channel, not as LRLR.
+_NON_INTERLEAVED = 0x20
+
+#: Field order of AudioStreamBasicDescription, for the tuple form below.
+_ASBD_RATE, _ASBD_FLAGS, _ASBD_CHANNELS = 0, 2, 6
+_ASBD_LENGTH = 8
+
+#: What ScreenCaptureKit says it will deliver, and what the unpacking assumes.
+_SAMPLE_DTYPE = "<f4"
+
+
+def describe_format(asbd) -> tuple[int, int, bool]:
+    """(sample rate, channels, planar) from an AudioStreamBasicDescription.
+
+    Two shapes, one meaning. pyobjc returns a struct with named fields when the
+    CoreAudio bindings are installed and a plain tuple when they are not - and
+    they are not, since nothing here depends on them. Reading only the named
+    form is how this raised `AttributeError` on every buffer.
+    """
+    if asbd is None:
+        raise AudioError("the sample buffer carries no audio format description")
+
+    if isinstance(asbd, tuple):
+        if len(asbd) < _ASBD_LENGTH:
+            raise AudioError(f"unreadable audio format description: {asbd!r}")
+        rate = asbd[_ASBD_RATE]
+        flags = asbd[_ASBD_FLAGS]
+        channels = asbd[_ASBD_CHANNELS]
+    else:
+        rate = asbd.mSampleRate
+        flags = asbd.mFormatFlags
+        channels = asbd.mChannelsPerFrame
+
+    return (
+        int(rate) or 48_000,
+        int(channels) or 1,
+        bool(int(flags) & _NON_INTERLEAVED),
+    )
 
 
 def sample_buffer_to_pcm16(buffer) -> bytes:
@@ -282,12 +381,13 @@ def sample_buffer_to_pcm16(buffer) -> bytes:
         raise AudioError(f"CMBlockBufferCopyDataBytes failed ({status})")
 
     description = CMSampleBufferGetFormatDescription(buffer)
-    asbd = CMAudioFormatDescriptionGetStreamBasicDescription(description)
-    rate = int(asbd.mSampleRate) or 48_000
-    channels = int(asbd.mChannelsPerFrame) or 1
+    rate, channels, planar = describe_format(
+        CMAudioFormatDescriptionGetStreamBasicDescription(description)
+    )
 
-    samples = np.frombuffer(bytes(raw), dtype="<f4")
-    return float_to_pcm16(resample(to_mono(samples, channels), rate))
+    samples = np.frombuffer(bytes(raw), dtype=_SAMPLE_DTYPE)
+    mono = to_mono(samples, channels, planar=planar)
+    return float_to_pcm16(resample(mono, rate))
 
 
 # -- pyobjc plumbing --------------------------------------------------------
@@ -320,6 +420,31 @@ def _await_callback(call, *, what: str, timeout: float = 15.0):
         raise AudioError(f"{what} failed: {failure[0]}")
 
 
+#: How long to let a libdispatch thread wind down before the main thread may
+#: race on to interpreter shutdown. Measured on macOS 26: 0 s kills the process
+#: every time and 0.05 s never does, so this is a comfortable multiple.
+_CALLBACK_SETTLE = 0.25
+
+
+def _let_the_callback_thread_finish() -> None:
+    """Yield long enough for ScreenCaptureKit's callback thread to unwind.
+
+    The completion handler runs on a libdispatch worker thread, and running
+    Python there gives that thread a thread state. If the interpreter starts
+    finalising while the thread is still holding one, CPython terminates it
+    with `pthread_exit`, which libdispatch's threads are not allowed to do:
+
+        BUG IN CLIENT OF LIBPTHREAD: pthread_exit() called from a thread
+        not created by pthread_create()
+
+    The process dies of SIGKILL and files a crash report - after doing its
+    work, so `sttop doctor` printed a perfect report and exited 137. Nothing
+    in the Python API can join a thread it did not start, so the fix is to
+    stop racing it.
+    """
+    time.sleep(_CALLBACK_SETTLE)
+
+
 def _shareable_content():
     """The current displays/windows/apps, fetched synchronously."""
     import ScreenCaptureKit as sc
@@ -336,7 +461,9 @@ def _shareable_content():
         done.set()
 
     sc.SCShareableContent.getShareableContentWithCompletionHandler_(handler)
-    if not done.wait(15.0):
+    answered = done.wait(15.0)
+    _let_the_callback_thread_finish()
+    if not answered:
         raise AudioError(
             "ScreenCaptureKit did not answer - screen recording permission is "
             "probably not granted yet. Grant it to your terminal in System "
