@@ -185,6 +185,10 @@ class Engine:
                 resource.close()
         self.transcriber = None
         self.diarizer = None
+        # The journal goes too, for the same reason: a closed transcript that
+        # still looks open makes status() report the finished session's counts
+        # and lets rename_speaker() rewrite a file nobody is appending to.
+        self.journal = None
         self._executor.shutdown(wait=True)
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
         self._captures.clear()
