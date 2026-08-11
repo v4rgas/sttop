@@ -166,7 +166,6 @@ class Engine:
             segmenter = Segmenter(
                 label, self.config.vad, self._queue.put_nowait, clock=self._session_clock
             )
-            self._segmenters[label] = segmenter
             capture = _capture_for(source)(
                 label,
                 source,
@@ -174,8 +173,24 @@ class Engine:
                 on_error=self._on_error,
                 wav_path=self._wav_path(label),
             )
+            try:
+                await capture.start()
+            except Exception as exc:
+                # The mic is the session; without it there is nothing to
+                # transcribe. System audio is the half we can do without - a
+                # revoked screen recording permission on macOS should cost the
+                # far side of the call, not the recording.
+                if label == MIC:
+                    raise
+                self._on_error(
+                    f"[{label}] {exc} - recording the microphone only. "
+                    "Run `sttop doctor` for how to enable system audio."
+                )
+                continue
+            # Registered only once it is live, so a stream that never started
+            # is not later stopped, metered, or fed by a paused segmenter.
+            self._segmenters[label] = segmenter
             self._captures.append(capture)
-            await capture.start()
 
         self._consumer = asyncio.create_task(self._consume(), name="transcribe")
         return self.journal.path
