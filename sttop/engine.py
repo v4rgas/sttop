@@ -43,6 +43,8 @@ SYSTEM = "system"
 
 UtteranceCallback = Callable[[Utterance], None]
 ErrorCallback = Callable[[str], None]
+#: (old label, label it was folded into, lines rewritten)
+RenameCallback = Callable[[str, str, int], None]
 
 
 def _capture_for(spec: devices.CaptureSpec):
@@ -80,10 +82,12 @@ class Engine:
         config: Config,
         on_utterance: UtteranceCallback,
         on_error: ErrorCallback | None = None,
+        on_rename: RenameCallback | None = None,
     ) -> None:
         self.config = config
         self._on_utterance = on_utterance
         self._on_error = on_error or (lambda message: None)
+        self._on_rename = on_rename or (lambda old, new, lines: None)
 
         self.transcriber: stt.Transcriber | None = None
         self.diarizer: diarize_mod.SpeakerLabeler | None = None
@@ -302,6 +306,20 @@ class Engine:
             # Back on the loop: writing and notifying are cheap and ordered.
             self.journal.append(utterance)
             self._on_utterance(utterance)
+            self._apply_merges()
+
+    def _apply_merges(self) -> None:
+        """Rewrite the transcript for speakers the diarizer has since joined.
+
+        Drained here rather than inside the diarizer because the journal is
+        the event loop's to touch, and because the merge must land *after* the
+        utterance that triggered it is already on disk.
+        """
+        if self.diarizer is None or self.journal is None:
+            return
+        for old, new in self.diarizer.take_merges():
+            lines = self.journal.rename_speaker(old, new)
+            self._on_rename(old, new, lines)
 
     def _transcribe(self, segment: Segment) -> Utterance | None:
         """The only code that runs off the event loop."""

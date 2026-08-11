@@ -97,7 +97,9 @@ class SttopApp(App):
         super().__init__()
         self.config = config
         self.session_title = title
-        self.engine = Engine(config, self._on_utterance, self._on_error)
+        self.engine = Engine(
+            config, self._on_utterance, self._on_error, self._on_rename
+        )
         self.journal_path: Path | None = None
         # Resolved before Textual grabs the terminal - the OSC 11 query needs
         # raw mode and a tty that nobody else is reading.
@@ -153,6 +155,17 @@ class SttopApp(App):
 
     def _on_error(self, message: str) -> None:
         self.query_one(TranscriptLog).write(f"[yellow]warn[/] {message}")
+
+    def _on_rename(self, old: str, new: str, lines: int) -> None:
+        """The diarizer decided two voices were one person.
+
+        The transcript file is rewritten, but lines already scrolled past in
+        the log are not - RichLog has no way to reach back into them - so this
+        says what happened instead of silently disagreeing with the file.
+        """
+        self.query_one(TranscriptLog).write(
+            f"[dim]— {old} was {new}; {lines} earlier line(s) relabelled[/]"
+        )
 
     def _refresh_status(self) -> None:
         self.query_one(StatusBar).render_status(self.engine.status())

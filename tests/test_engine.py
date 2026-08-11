@@ -187,3 +187,19 @@ def test_a_mic_that_will_not_start_still_fails_the_session(tmp_path, fake_captur
     # And stop() still gives back the models and the executor thread.
     assert asyncio.run(engine.stop()) is not None
     assert engine.transcriber is None
+
+
+def test_a_diarizer_merge_relabels_the_transcript(tmp_path):
+    """The diarizer decides late that two labels were one person; the engine is
+    what turns that decision into a rewritten transcript."""
+    engine, _, diarizer = started_engine(tmp_path)
+    engine.journal.append(Utterance("system", "spk2", 1.0, 2.0, "goodbye"))
+    renames = []
+    engine._on_rename = lambda old, new, lines: renames.append((old, new, lines))
+    diarizer.take_merges = lambda: [("spk2", "spk1")]
+
+    engine._apply_merges()
+
+    text = engine.journal.path.read_text()
+    assert "**spk2**" not in text and text.count("**spk1**") == 2
+    assert renames == [("spk2", "spk1", 1)]

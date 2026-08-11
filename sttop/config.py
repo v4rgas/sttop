@@ -76,12 +76,29 @@ class UiConfig:
 class DiarizeConfig:
     enabled: bool = True
     #: Cosine similarity above which a voice is considered a known speaker.
-    threshold: float = 0.50
+    #: ECAPA-TDNN's verification operating point sits near 0.3, not the 0.5 a
+    #: cosine "looks like" it should use: same-speaker pairs across changing
+    #: mic gain, distance and codec routinely land in the 0.35-0.5 band, and a
+    #: stricter bar mints a new speaker for each of them.
+    threshold: float = 0.30
     #: Grey zone below `threshold` where an utterance joins the nearest speaker
-    #: without updating that speaker's centroid, instead of opening a new one.
-    margin: float = 0.15
+    #: instead of opening a new one.
+    margin: float = 0.10
     #: Segments shorter than this are too small for a reliable voice embedding.
-    min_speech_s: float = 1.5
+    #: ECAPA embeddings are unstable below roughly two seconds.
+    min_speech_s: float = 2.0
+    #: Long segments are embedded as overlapping windows of this length and
+    #: averaged; an average of several windows is steadier than one long pass.
+    window_s: float = 3.0
+    #: Utterances a speaker needs before its centroid counts as settled. Until
+    #: then the speaker accepts matches down to `threshold - margin`, because
+    #: the alternative is judging voice two against a centroid built from a
+    #: single noisy embedding.
+    warmup: int = 3
+    #: Similarity at which two settled speakers are judged to be one person and
+    #: merged retroactively. Above `threshold`, so a merge needs more evidence
+    #: than an ordinary match.
+    merge_threshold: float = 0.45
     model: str = "speechbrain/spkrec-ecapa-voxceleb"
 
 

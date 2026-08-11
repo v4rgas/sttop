@@ -130,14 +130,23 @@ behind, the queue absorbs the lag — visible as `queue N` in the status bar —
 than dropping audio.
 
 Speaker labels come from online clustering of ECAPA-TDNN voice embeddings: each
-utterance is matched against running centroids by cosine similarity. A confident
-match (≥ `threshold`) joins that speaker and updates its centroid; a near miss
-(within `margin` below it) joins without touching the centroid; only a clearly
-distant voice opens a new speaker. That hysteresis matters — without it a single
-noisy embedding mints a phantom participant, and one person ends up spread across
-`spk1`/`spk2`/`spk3`. Being online means labels are assigned as audio arrives and are
-never revised, which is the price of real time. Segments under 1.5 s are too short to
-embed reliably and inherit the previous speaker, or show as `spk?`.
+utterance is embedded as overlapping windows, averaged, and matched against running
+centroids by cosine similarity. A confident match (≥ `threshold`) joins that speaker;
+a near miss (within `margin` below it) joins too, but without touching a settled
+centroid; only a clearly distant voice opens a new speaker. That hysteresis matters —
+without it a single noisy embedding mints a phantom participant, and one person ends
+up spread across `spk1`/`spk2`/`spk3`. A speaker's first `warmup` utterances are
+treated as provisional: the centroid is still one or two noisy vectors, so it accepts
+matches down to the bottom of the grey zone rather than judging voice two against
+noise.
+
+Assignments are greedy, but they are not final. Once two settled speakers look like
+the same person (≥ `merge_threshold`) they are merged, and the label that loses is
+rewritten throughout the transcript — the file on disk is corrected, and the TUI notes
+the relabelling rather than silently disagreeing with it. Deciding now and revising
+when the evidence arrives is what keeps real-time labels from freezing an early
+mistake. Segments under `min_speech_s` are too short to embed reliably and inherit the
+previous speaker, or show as `spk?`.
 
 ## Backends
 
@@ -186,8 +195,10 @@ theme = "auto"         # auto follows your terminal; or gruvbox, nord, ...
 
 [diarize]
 enabled = true
-threshold = 0.50       # lower = fewer, broader speakers
-margin = 0.15          # grey zone that attaches instead of opening a speaker
+threshold = 0.30       # lower = fewer, broader speakers
+margin = 0.10          # grey zone that attaches instead of opening a speaker
+merge_threshold = 0.45 # two settled speakers this alike are one person
+warmup = 3             # utterances before a speaker's centroid is trusted
 ```
 
 ## Theming
