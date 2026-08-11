@@ -43,6 +43,7 @@ uv run sttop --backend whisper -m small
 uv run sttop devices --test        # list audio sources, record 1s from each
 uv run sttop sessions              # list past transcripts
 uv run sttop config                # write ~/.config/sttop/config.toml
+uv run sttop theme                 # show the detected terminal colour scheme
 ```
 
 Keys: `q` quit · `space` pause · `r` rename a speaker (`spk1=Ana`, rewrites past lines too).
@@ -137,11 +138,26 @@ model = ""             # blank = the backend's default model
 device = "auto"        # whisper only
 language = ""          # blank = autodetect
 
+[ui]
+theme = "auto"         # auto follows your terminal; or gruvbox, nord, ...
+
 [diarize]
 enabled = true
 threshold = 0.50       # lower = fewer, broader speakers
 margin = 0.15          # grey zone that attaches instead of opening a speaker
 ```
+
+## Theming
+
+By default sttop paints with the `ansi-dark` / `ansi-light` Textual themes, which
+use only the terminal's own 16 ANSI colours — so it inherits whatever palette you
+already have rather than imposing its own. Which of the two is picked by reading
+`COLORFGBG`, and failing that by asking the terminal for its background colour over
+OSC 11 (supported by ghostty, kitty, alacritty, wezterm, foot, xterm). If nothing
+answers, it assumes dark. Run `sttop theme` to see what was detected.
+
+Set `ui.theme` to any Textual theme name (`gruvbox`, `nord`, `catppuccin-mocha`,
+`solarized-light`, …) to override the terminal-following behaviour.
 
 ## Tests
 

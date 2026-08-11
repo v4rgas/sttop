@@ -12,6 +12,7 @@ from textual.widgets import Footer, Input, RichLog, Static
 from .config import Config
 from .engine import Engine, EngineStatus
 from .journal import Utterance, clock
+from .terminal import detect_theme
 
 SPEAKER_COLORS = ["cyan", "magenta", "yellow", "green", "blue", "red"]
 
@@ -96,6 +97,9 @@ class SttopApp(App):
         self.session_title = title
         self.engine = Engine(config, self._on_utterance, self._on_error)
         self.journal_path: Path | None = None
+        # Resolved before Textual grabs the terminal - the OSC 11 query needs
+        # raw mode and a tty that nobody else is reading.
+        self._theme = detect_theme(config.ui.theme)
 
     # -- composition -------------------------------------------------------
 
@@ -109,6 +113,7 @@ class SttopApp(App):
 
     def on_mount(self) -> None:
         self.title = "sttop"
+        self.theme = self._theme
         self._banner("loading model…")
         # prepare() offloads the slow model load itself, so this stays on the loop.
         self.run_worker(self._boot(), exclusive=True)

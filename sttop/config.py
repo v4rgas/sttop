@@ -53,6 +53,14 @@ class SttConfig:
 
 
 @dataclass
+class UiConfig:
+    #: "auto" follows the terminal's background (ansi-dark / ansi-light), so the
+    #: UI uses your own palette. Any Textual theme name also works, e.g.
+    #: "gruvbox", "nord", "textual-dark".
+    theme: str = "auto"
+
+
+@dataclass
 class DiarizeConfig:
     enabled: bool = True
     #: Cosine similarity above which a voice is considered a known speaker.
@@ -71,6 +79,7 @@ class Config:
     vad: VadConfig = field(default_factory=VadConfig)
     stt: SttConfig = field(default_factory=SttConfig)
     diarize: DiarizeConfig = field(default_factory=DiarizeConfig)
+    ui: UiConfig = field(default_factory=UiConfig)
     #: One Markdown file per session lands here.
     sessions_dir: str = str(DATA_DIR / "sessions")
     #: Where WAVs land when audio.save_wav is on.

@@ -40,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("sessions", help="list recorded sessions")
+    sub.add_parser("theme", help="show the detected terminal colour scheme")
     sub.add_parser("config", help="write a default config file")
 
     return parser
@@ -69,6 +70,19 @@ def cmd_devices(config: Config, args) -> int:
             except Exception as exc:
                 line += f"   [failed: {str(exc).splitlines()[0][:40]}]"
         print(line)
+    return 0
+
+
+def cmd_theme(config: Config) -> int:
+    import os
+
+    from .terminal import detect_theme, from_colorfgbg, query_osc11
+
+    colorfgbg = os.environ.get("COLORFGBG")
+    print(f"COLORFGBG   {colorfgbg or '<unset>'} -> {from_colorfgbg(colorfgbg)}")
+    print(f"OSC 11      {query_osc11() or '<no reply>'}")
+    print(f"configured  {config.ui.theme}")
+    print(f"\nusing      {detect_theme(config.ui.theme)}")
     return 0
 
 
@@ -120,6 +134,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_devices(config, args)
     if args.command == "sessions":
         return cmd_sessions(config)
+    if args.command == "theme":
+        return cmd_theme(config)
     if args.command == "config":
         path = write_default_config(args.config)
         print(f"wrote {path}")
