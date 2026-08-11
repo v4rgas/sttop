@@ -1,6 +1,6 @@
 [project]
 name = "sttop"
-version = "0.3.2"
+version = "0.4.0"
 description = "Live speech-to-text monitor for the terminal. Taps mic + system audio, transcribes and labels speakers in real time, stores everything locally."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -1,6 +1,6 @@
 """sttop - live speech-to-text monitor for the terminal."""
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"
 
 SAMPLE_RATE = 16_000
 FRAME_MS = 20
