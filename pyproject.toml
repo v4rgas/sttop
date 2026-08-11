@@ -12,15 +12,14 @@ dependencies = [
     "webrtcvad-wheels>=2.0.14",
     "platformdirs>=4.0",
     "onnx-asr[cpu,hub]>=0.12",
-]
-
-[project.optional-dependencies]
-# Speaker identification. Pulls torch, so it is opt-in.
-diarize = [
+    # Speaker identification. Pulls torch, but the CPU wheels keep it manageable
+    # and a transcript without speaker labels is not worth much.
     "torch>=2.2",
     "torchaudio>=2.2",
     "speechbrain>=1.0",
 ]
+
+[project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",

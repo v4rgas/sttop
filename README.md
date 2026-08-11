@@ -31,7 +31,7 @@ Needs `ffmpeg` and PipeWire or PulseAudio (`pactl`).
 
 ```bash
 git clone <this repo> && cd sttop
-uv sync --extra diarize     # omit --extra diarize to skip speaker ID (and torch)
+uv sync
 ```
 
 ## Use

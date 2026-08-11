@@ -161,6 +161,6 @@ def build(config: DiarizeConfig) -> SpeakerLabeler:
     try:
         return Diarizer(config)
     except ImportError:
-        return NullDiarizer("install sttop[diarize]")
+        return NullDiarizer("reinstall sttop")
     except Exception as exc:  # model download failure, corrupt cache, ...
         return NullDiarizer(str(exc).splitlines()[0][:40])

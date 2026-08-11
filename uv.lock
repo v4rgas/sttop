@@ -1315,7 +1315,12 @@ dependencies = [
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "onnx-asr", extra = ["cpu", "hub"] },
     { name = "platformdirs" },
+    { name = "speechbrain" },
     { name = "textual" },
+    { name = "torch", version = "2.13.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
+    { name = "torch", version = "2.13.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
+    { name = "torchaudio", version = "2.11.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
+    { name = "torchaudio", version = "2.11.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
     { name = "webrtcvad-wheels" },
 ]
 
@@ -1323,13 +1328,6 @@ dependencies = [
 dev = [
     { name = "pytest" },
     { name = "ruff" },
-]
-diarize = [
-    { name = "speechbrain" },
-    { name = "torch", version = "2.13.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
-    { name = "torch", version = "2.13.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
-    { name = "torchaudio", version = "2.11.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
-    { name = "torchaudio", version = "2.11.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
 ]
 
 [package.metadata]
@@ -1340,13 +1338,13 @@ requires-dist = [
     { name = "platformdirs", specifier = ">=4.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
-    { name = "speechbrain", marker = "extra == 'diarize'", specifier = ">=1.0" },
+    { name = "speechbrain", specifier = ">=1.0" },
     { name = "textual", specifier = ">=0.80" },
-    { name = "torch", marker = "extra == 'diarize'", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "torchaudio", marker = "extra == 'diarize'", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torch", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torchaudio", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu" },
     { name = "webrtcvad-wheels", specifier = ">=2.0.14" },
 ]
-provides-extras = ["diarize", "dev"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "sympy"

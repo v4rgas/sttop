@@ -14,7 +14,7 @@ jobs:
         with:
           enable-cache: true
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: uv sync --extra diarize --extra dev
+      - run: uv sync --extra dev
       # The audio-hardware tests stay opt-in; CI has no sound server.
       - run: uv run --extra dev pytest -q
       - run: uv run ruff check .
