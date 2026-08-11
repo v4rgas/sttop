@@ -30,7 +30,24 @@ much easier problem than diarizing a single mixed track.
 Needs `ffmpeg` and PipeWire or PulseAudio (`pactl`).
 
 ```bash
-git clone <this repo> && cd sttop
+uvx --index https://download.pytorch.org/whl/cpu sttop
+```
+
+The `--index` flag matters. Speaker labelling needs torch, and the stock PyPI torch
+bundles CUDA — about 2.5GB of nvidia wheels that buy nothing here, since
+CTranslate2 has no ROCm backend and CPU inference keeps up with live audio fine.
+The flag points torch at the CPU builds and falls back to PyPI for everything else.
+
+To install it permanently rather than running it ad hoc:
+
+```bash
+uv tool install --index https://download.pytorch.org/whl/cpu sttop
+```
+
+From a checkout, `uv sync` reads the CPU index out of `pyproject.toml` already:
+
+```bash
+git clone https://github.com/v4rgas/sttop && cd sttop
 uv sync
 ```
 

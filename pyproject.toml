@@ -5,6 +5,21 @@ description = "Live speech-to-text monitor for the terminal. Taps mic + system a
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
+authors = [{ name = "v4rgas" }]
+keywords = ["speech-to-text", "transcription", "whisper", "diarization", "tui", "terminal"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Utilities",
+]
 dependencies = [
     "textual>=0.80",
     "numpy>=1.24",
@@ -27,6 +42,11 @@ dev = [
 
 [project.scripts]
 sttop = "sttop.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/v4rgas/sttop"
+Repository = "https://github.com/v4rgas/sttop"
+Issues = "https://github.com/v4rgas/sttop/issues"
 
 # Default torch to the CPU wheels. The stock PyPI torch bundles CUDA (~2.5GB) and
 # CTranslate2 (faster-whisper) has no ROCm backend anyway, so a GPU build buys
