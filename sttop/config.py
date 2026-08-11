@@ -87,6 +87,14 @@ class DiarizeConfig:
     #: Segments shorter than this are too small for a reliable voice embedding.
     #: ECAPA embeddings are unstable below roughly two seconds.
     min_speech_s: float = 2.0
+    #: Length a segment needs before it may *open* a speaker, as opposed to
+    #: joining one. Claiming a new participant is a much stronger claim than
+    #: recognising a known one, and "Cool." is not evidence for it - a
+    #: two-word segment's embedding is mostly noise, and matches nobody.
+    new_speaker_min_s: float = 4.0
+    #: Hard cap on clustered voices, for when you know who is in the room.
+    #: 0 means no cap. At the cap the nearest speaker always wins.
+    max_speakers: int = 0
     #: Long segments are embedded as overlapping windows of this length and
     #: averaged; an average of several windows is steadier than one long pass.
     window_s: float = 3.0

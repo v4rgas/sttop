@@ -90,7 +90,7 @@ def test_writing_a_config_does_not_require_a_valid_one(tmp_path, capsys):
 class _RecordArgs:
     """The record subcommand's arguments, all left at their defaults."""
 
-    mic = system = model = backend = language = title = None
+    mic = system = model = backend = language = title = speakers = None
     no_diarize = save_wav = False
 
 

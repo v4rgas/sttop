@@ -15,16 +15,27 @@ first decision about a voice is made on the least evidence we will ever have,
 and greedy assignment alone freezes that mistake forever - one person ends up
 scattered across spk2, spk5 and spk7.
 
-So the clustering here is greedy but not final. Speakers accumulate their
-embeddings, centroids firm up as people talk, and once two settled speakers
-look like the same person they are merged and the earlier label is *rewritten*
-in the transcript. That mirrors what incremental-clustering diarizers do
-offline: decide now, revise when the evidence arrives.
+Two things keep that from happening, both built on the same idea: opening a
+new speaker is a much stronger claim than recognising a known one, and it
+should need proportionally more evidence.
+
+*Before* the fact, a short utterance that matches nobody is held rather than
+acted on. Two words of speech embed to mostly noise, and noise resembles
+nothing - including the next piece of noise. So it becomes a speaker only once
+something later looks like it. One unmatched frame proves nothing; two
+agreeing ones are a voice.
+
+*After* the fact, speakers accumulate their embeddings, centroids firm up as
+people talk, and once two settled speakers look like the same person they are
+merged and the losing label is *rewritten* in the transcript. That mirrors
+what incremental-clustering diarizers do offline: decide now, revise when the
+evidence arrives.
 """
 
 from __future__ import annotations
 
 import threading
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -42,6 +53,11 @@ UNKNOWN_LABEL = "spk?"
 #: Cap on windows embedded per utterance. A long monologue gains nothing from
 #: averaging fifty windows, and this runs on the transcription thread.
 MAX_WINDOWS = 4
+
+#: How many unmatched short utterances to keep in hand while waiting for one
+#: of them to be corroborated. Older ones fall off - a voice that has not
+#: recurred in this many turns is not one we can place.
+PENDING = 12
 
 #: A rename this diarizer decided on: (old label, label it is now part of).
 Merge = tuple[str, str]
@@ -123,6 +139,9 @@ class Clusters:
         self._speakers: list[_Speaker] = []
         self._next_id = 0
         self._merges: list[Merge] = []
+        #: Short utterances that matched nobody. Held rather than acted on -
+        #: see `_promote`.
+        self._pending: deque[np.ndarray] = deque(maxlen=PENDING)
 
     @property
     def count(self) -> int:
@@ -135,24 +154,40 @@ class Clusters:
     def _settled(self, speaker: _Speaker) -> bool:
         return len(speaker.embeddings) >= self.config.warmup
 
-    def assign(self, embedding: np.ndarray) -> str:
+    def assign(self, embedding: np.ndarray, may_create: bool = True) -> str | None:
         """Label this voice, then fold together anyone it just revealed to be
-        the same person. Returns the label; read `take_merges` for the rest."""
-        speaker = self._nearest_or_new(embedding)
+        the same person. Returns the label; read `take_merges` for the rest.
+
+        `may_create` False means this segment is allowed to join a speaker but
+        not to invent one; None comes back when it matched nobody, and the
+        caller decides what an unattributable utterance looks like.
+        """
+        speaker = self._nearest_or_new(embedding, may_create)
+        if speaker is None:
+            speaker = self._promote(embedding)
+        if speaker is None:
+            return None
         renamed = {}
         for old, new in self._collapse_duplicates():
             renamed[old] = new
             self._merges.append((old, new))
         return renamed.get(speaker.name, speaker.name)
 
-    def _nearest_or_new(self, embedding: np.ndarray) -> _Speaker:
+    def _nearest_or_new(
+        self, embedding: np.ndarray, may_create: bool = True
+    ) -> _Speaker | None:
         best, best_score = None, -1.0
         for speaker in self._speakers:
             score = float(np.dot(embedding, speaker.centroid))
             if score > best_score:
                 best, best_score = speaker, score
 
+        capped = 0 < self.config.max_speakers <= len(self._speakers)
         if best is not None:
+            if capped:
+                # You told us who is in the room. Nearest wins, however far.
+                best.add(embedding)
+                return best
             floor = self.config.threshold - self.config.margin
             if best_score >= self.config.threshold:
                 best.add(embedding)
@@ -166,11 +201,36 @@ class Clusters:
                     best.add(embedding)
                 return best
 
+        if not may_create:
+            return None
+        return self._open(embedding)
+
+    def _open(self, *embeddings: np.ndarray) -> _Speaker:
         speaker = _Speaker(id=self._next_id)
-        speaker.add(embedding)
+        for embedding in embeddings:
+            speaker.add(embedding)
         self._next_id += 1
         self._speakers.append(speaker)
         return speaker
+
+    def _promote(self, embedding: np.ndarray) -> _Speaker | None:
+        """Decide whether a short unmatched utterance is a person or noise.
+
+        Duration alone cannot tell those apart, so this waits for the signal
+        that can: recurrence. Two words of speech embed to mostly noise, and
+        noise does not come back - a real participant does. So a short
+        utterance that matches nobody is held, and only becomes a speaker once
+        something later looks like it. One noisy frame proves nothing; two
+        agreeing ones are a voice.
+        """
+        if 0 < self.config.max_speakers <= len(self._speakers):
+            return None
+        for index, held in enumerate(self._pending):
+            if float(np.dot(embedding, held)) >= self.config.threshold:
+                del self._pending[index]
+                return self._open(held, embedding)
+        self._pending.append(embedding)
+        return None
 
     def _collapse_duplicates(self) -> list[Merge]:
         """Fold together speakers that turned out to be one person.
@@ -232,23 +292,33 @@ class Diarizer:
             # Too short to embed reliably. Assume the current speaker is still
             # talking if this lands right after their last utterance.
             with self._lock:
-                if self._last_label and segment.start - self._last_end < 5.0:
-                    return self._last_label
-            return UNKNOWN_LABEL
+                return self._recent_label(segment)
 
         try:
             embedding = self._embed(segment.pcm)
         except Exception:
             return UNKNOWN_LABEL
 
+        may_create = segment.duration >= self.config.new_speaker_min_s
+
         # `_last_label` and `_last_end` describe the same utterance, so they are
         # updated under the lock that the reader above holds: a torn pair would
         # carry one utterance's speaker into another's timing.
         with self._lock:
-            label = self._clusters.assign(embedding)
+            label = self._clusters.assign(embedding, may_create=may_create)
+            if label is None:
+                # Short, matched nobody, and not long enough to be trusted as
+                # somebody new. Treat it like any other segment we cannot place.
+                return self._recent_label(segment)
             self._last_label = label
             self._last_end = segment.end
         return label
+
+    def _recent_label(self, segment: Segment) -> str:
+        """Whoever was last speaking, if this lands right after them."""
+        if self._last_label and segment.start - self._last_end < 5.0:
+            return self._last_label
+        return UNKNOWN_LABEL
 
     def take_merges(self) -> list[Merge]:
         """Renames decided since the last call, oldest first.

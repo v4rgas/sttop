@@ -133,19 +133,22 @@ Speaker labels come from online clustering of ECAPA-TDNN voice embeddings: each
 utterance is embedded as overlapping windows, averaged, and matched against running
 centroids by cosine similarity. A confident match (≥ `threshold`) joins that speaker;
 a near miss (within `margin` below it) joins too, but without touching a settled
-centroid; only a clearly distant voice opens a new speaker. That hysteresis matters —
-without it a single noisy embedding mints a phantom participant, and one person ends
-up spread across `spk1`/`spk2`/`spk3`. A speaker's first `warmup` utterances are
-treated as provisional: the centroid is still one or two noisy vectors, so it accepts
-matches down to the bottom of the grey zone rather than judging voice two against
-noise.
+centroid; only a clearly distant voice opens a new speaker.
+
+Opening a speaker is a much stronger claim than recognising one, so it takes more
+evidence — which is what keeps one person from turning into eight. A short utterance
+that matches nobody is *held* rather than acted on: two words embed to mostly noise,
+and noise resembles nothing, including the next piece of noise. It becomes a speaker
+only once something later looks like it. Until then the line reads `spk?`, which is
+the honest answer. If you already know who is in the room, `--speakers N` caps the
+count outright and the nearest voice always wins.
 
 Assignments are greedy, but they are not final. Once two settled speakers look like
-the same person (≥ `merge_threshold`) they are merged, and the label that loses is
+the same person (≥ `merge_threshold`) they are merged, and the losing label is
 rewritten throughout the transcript — the file on disk is corrected, and the TUI notes
 the relabelling rather than silently disagreeing with it. Deciding now and revising
 when the evidence arrives is what keeps real-time labels from freezing an early
-mistake. Segments under `min_speech_s` are too short to embed reliably and inherit the
+mistake. Segments under `min_speech_s` are too short to embed at all and inherit the
 previous speaker, or show as `spk?`.
 
 ## Backends
@@ -199,6 +202,8 @@ threshold = 0.30       # lower = fewer, broader speakers
 margin = 0.10          # grey zone that attaches instead of opening a speaker
 merge_threshold = 0.45 # two settled speakers this alike are one person
 warmup = 3             # utterances before a speaker's centroid is trusted
+new_speaker_min_s = 4.0 # shorter than this must be corroborated to open a speaker
+max_speakers = 0       # 0 = no cap; same as --speakers N
 ```
 
 ## Theming

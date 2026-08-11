@@ -43,6 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--language", help="force a language, e.g. es (default: autodetect)"
     )
     record.add_argument("--no-diarize", action="store_true", help="skip speaker id")
+    record.add_argument(
+        "--speakers",
+        type=int,
+        metavar="N",
+        help="how many voices to expect besides your own; caps the clustering",
+    )
     record.add_argument("--save-wav", action="store_true", help="keep the raw audio")
 
     devices_cmd = command("devices", "list audio sources")
@@ -233,6 +239,8 @@ def cmd_record(config: Config, args) -> int:
         config.stt.language = args.language
     if args.no_diarize:
         config.diarize.enabled = False
+    if args.speakers is not None:
+        config.diarize.max_speakers = max(0, args.speakers)
     if args.save_wav:
         config.audio.save_wav = True
 
