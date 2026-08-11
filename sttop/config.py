@@ -39,8 +39,7 @@ class VadConfig:
 
 @dataclass
 class SttConfig:
-    #: "parakeet" (onnxruntime), "whisper" (faster-whisper), or "cloud"
-    #: (any OpenAI-compatible /audio/transcriptions endpoint).
+    #: "parakeet" (onnxruntime) or "whisper" (faster-whisper).
     backend: str = "parakeet"
     #: Blank picks the default model for the chosen backend.
     model: str = ""
@@ -51,16 +50,6 @@ class SttConfig:
     #: None lets Whisper autodetect per segment.
     language: str | None = None
     beam_size: int = 1
-
-
-@dataclass
-class CloudConfig:
-    #: Any OpenAI-compatible transcription API. Groq is the cheap fast default.
-    #: Note: OpenRouter does NOT expose an audio-transcription endpoint.
-    base_url: str = "https://api.groq.com/openai/v1"
-    model: str = "whisper-large-v3-turbo"
-    api_key_env: str = "GROQ_API_KEY"
-    timeout_s: float = 60.0
 
 
 @dataclass
@@ -81,7 +70,6 @@ class Config:
     audio: AudioConfig = field(default_factory=AudioConfig)
     vad: VadConfig = field(default_factory=VadConfig)
     stt: SttConfig = field(default_factory=SttConfig)
-    cloud: CloudConfig = field(default_factory=CloudConfig)
     diarize: DiarizeConfig = field(default_factory=DiarizeConfig)
     #: One Markdown file per session lands here.
     sessions_dir: str = str(DATA_DIR / "sessions")

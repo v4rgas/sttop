@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import io
-import wave
 from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
-
-from .. import SAMPLE_RATE
 
 
 @dataclass(frozen=True)
@@ -32,12 +28,3 @@ class Transcriber(Protocol):
 def pcm_to_float32(pcm: bytes) -> np.ndarray:
     return np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
 
-
-def pcm_to_wav(pcm: bytes) -> bytes:
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(SAMPLE_RATE)
-        wav.writeframes(pcm)
-    return buffer.getvalue()

@@ -4,8 +4,8 @@ Live speech-to-text monitor for the terminal — `htop`, but for what is being s
 
 Taps your **microphone** and your **system audio output** as two independent streams,
 transcribes both in real time, labels who is speaking, and appends every line to a
-Markdown file as it happens. Local-first: nothing leaves the machine unless you
-explicitly switch to a cloud backend.
+Markdown file as it happens. Fully local: no network, no API keys, nothing leaves
+the machine.
 
 ```
  sttop  ● rec 04:12   mic ███·······  sys ██████····   parakeet-tdt/cpu onnx · ecapa @0.50 · queue 0 · 37 lines · 3 voices
@@ -111,18 +111,8 @@ CTranslate2 ships **CUDA and CPU backends only — there is no ROCm build**, so 
 GPU this runs on CPU no matter what torch reports. The device is detected at startup
 (`cuda` if CTranslate2 sees one, else `cpu`) and shown in the status bar.
 
-**cloud** — see below. To push a Radeon card at the *diarization* half, resync torch
-against the ROCm index (see the comment in `pyproject.toml`).
-
-## Cloud fallback
-
-If local quality still isn't good enough, set `stt.backend = "cloud"`. This posts each
-segment to any OpenAI-compatible `/audio/transcriptions` endpoint — Groq's
-`whisper-large-v3-turbo` by default, or OpenAI, or your own server.
-
-**OpenRouter cannot be used for transcription**: it proxies chat completions only and
-exposes no audio endpoint. It remains the right choice for summarizing a finished
-transcript, which is a separate step.
+To push a Radeon card at the *diarization* half, resync torch against the ROCm index
+(see the comment in `pyproject.toml`).
 
 ## Config
 
@@ -142,7 +132,7 @@ silence_ms = 700
 max_segment_s = 15.0
 
 [stt]
-backend = "parakeet"   # parakeet | whisper | cloud
+backend = "parakeet"   # parakeet | whisper
 model = ""             # blank = the backend's default model
 device = "auto"        # whisper only
 language = ""          # blank = autodetect
