@@ -1,6 +1,6 @@
 [project]
 name = "sttop"
-version = "0.2.0"
+version = "0.3.0"
 description = "Live speech-to-text monitor for the terminal. Taps mic + system audio, transcribes and labels speakers in real time, stores everything locally."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -31,6 +31,10 @@ dependencies = [
     # Fallback ffmpeg, fetched on first use only when the system has none, so
     # a fresh `uvx sttop` records instead of printing a package name.
     "static-ffmpeg>=2.7",
+    # macOS system audio: ScreenCaptureKit taps the output with no virtual
+    # driver, and CoreMedia is what its buffers arrive in.
+    "pyobjc-framework-ScreenCaptureKit>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-CoreMedia>=10.0; sys_platform == 'darwin'",
     # Speaker identification. Pulls torch, but the CPU wheels keep it manageable
     # and a transcript without speaker labels is not worth much.
     "torch>=2.2",

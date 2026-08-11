@@ -37,19 +37,17 @@ directory on first run, and `pactl` is optional — the audio server resolves th
 default mic and monitor itself, so `pactl` is only needed to pick a source *by
 name*. Run `sttop doctor` to see what it found.
 
-**macOS** records the microphone with no setup at all. System audio is the one
-thing Apple gives you no way to capture: there is no equivalent of a PulseAudio
-monitor, so it needs a loopback device.
+**macOS** needs nothing installed either. The mic comes from AVFoundation and
+system audio from ScreenCaptureKit — no BlackHole, no Multi-Output Device, and
+your output device and volume keys keep working, because nothing is rerouted.
+It does need permission, granted once to the terminal you run sttop in:
 
-```bash
-brew install blackhole-2ch
-```
+> System Settings → Privacy & Security → **Screen & System Audio Recording**
 
-Then in Audio MIDI Setup create a Multi-Output Device containing both your
-speakers and BlackHole, and select it as the system output — that is what lets
-you keep hearing the call while sttop records it. sttop picks BlackHole up
-automatically once it exists. Until then it records the mic only, which is your
-side of the conversation, and says so rather than refusing to start.
+Restart the terminal afterwards; macOS only re-reads that permission at launch.
+Requires macOS 13 (Ventura) or newer — on anything older, or before the
+permission is granted, sttop records the mic only and says so rather than
+refusing to start.
 
 To install it permanently rather than running it ad hoc:
 
@@ -108,10 +106,15 @@ line — kill it mid-meeting and the transcript so far is already on disk.
 ## How it works
 
 ```
-ffmpeg (mic)               ─┐
-                            ├─ webrtcvad segmenter ─→ queue ─→ parakeet ─→ ecapa ─→ journal.md
-ffmpeg (system output)     ─┘
+mic     (pulse / avfoundation)  ─┐
+                                 ├─ webrtcvad ─→ queue ─→ parakeet ─→ ecapa ─→ journal.md
+system  (monitor / ScreenCaptureKit) ─┘
 ```
+
+The mic is always an ffmpeg subprocess. System audio is one too on Linux, where
+the monitor source is just another pulse device; on macOS it is an in-process
+ScreenCaptureKit stream, converted to the same 16 kHz mono frames before it
+reaches the segmenter, so everything downstream sees one format.
 
 Audio is cut into utterances by voice-activity detection (a segment closes after
 700 ms of silence, or at 15 s for a monologue), and only speech reaches the model.
@@ -164,7 +167,7 @@ sessions_dir = "~/.local/share/sttop/sessions"
 
 [audio]
 mic_source = ""        # substring match against source names; blank = default
-system_source = ""     # blank = the default monitor (or BlackHole on macOS)
+system_source = ""     # blank = the default monitor; ignored on macOS
 save_wav = false
 
 [vad]

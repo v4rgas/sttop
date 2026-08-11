@@ -40,8 +40,23 @@ from .journal import Journal, Utterance
 MIC = "mic"
 SYSTEM = "system"
 
+
 UtteranceCallback = Callable[[Utterance], None]
 ErrorCallback = Callable[[str], None]
+
+
+def _capture_for(spec: devices.CaptureSpec):
+    """Which reader a source needs.
+
+    Everything is an ffmpeg subprocess except macOS system audio, which comes
+    from an in-process ScreenCaptureKit stream - imported lazily so a Linux
+    run never touches the Apple bindings.
+    """
+    if spec.backend == "screencapture":
+        from .audio.screencapture import ScreenAudioCapture
+
+        return ScreenAudioCapture
+    return SourceCapture
 
 
 @dataclass
@@ -152,7 +167,7 @@ class Engine:
                 label, self.config.vad, self._queue.put_nowait, clock=self._session_clock
             )
             self._segmenters[label] = segmenter
-            capture = SourceCapture(
+            capture = _capture_for(source)(
                 label,
                 source,
                 on_frame=segmenter.feed,

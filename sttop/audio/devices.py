@@ -3,10 +3,10 @@
 Two capture worlds, one interface. On Linux a PulseAudio/PipeWire server hands
 out both the microphone and a *monitor* of whatever is playing, so both halves
 of the two-stream design come from the same place. macOS has no monitor: the
-mic arrives through AVFoundation, and system audio needs a loopback driver
-such as BlackHole to route the output back to an input. Everything below
-exists to hide that difference behind `resolve()`, which hands back a
-`CaptureSpec` the capture layer can spawn.
+mic arrives through AVFoundation, and system audio comes from ScreenCaptureKit,
+which taps the machine's output with no virtual driver and no device switching.
+Everything below exists to hide that difference behind `resolve()`, which hands
+back a `CaptureSpec` describing which reader to use.
 
 `pactl` is used on Linux when it is there, for listing and substring matching,
 but is no longer required: the audio server resolves `@DEFAULT_SOURCE@` and
@@ -29,20 +29,6 @@ MACOS = sys.platform == "darwin"
 #: Pulse resolves these server-side, so they work with no `pactl` present.
 PULSE_DEFAULT_SOURCE = "@DEFAULT_SOURCE@"
 PULSE_DEFAULT_MONITOR = "@DEFAULT_MONITOR@"
-
-#: Virtual output devices people install to loop system audio back to an input.
-#: Matched case-insensitively against AVFoundation device names.
-_LOOPBACK_HINTS = (
-    "blackhole",
-    "loopback",
-    "soundflower",
-    "vb-cable",
-    "vb-audio",
-    "existential",
-    "multi-output",
-    "aggregate",
-)
-
 
 class AudioError(RuntimeError):
     pass
@@ -80,7 +66,7 @@ class CaptureSpec:
     `label` is what the journal header and the UI show.
     """
 
-    backend: str  # "pulse" | "avfoundation"
+    backend: str  # "pulse" | "avfoundation" | "screencapture"
     device: str
     label: str
 
@@ -169,27 +155,23 @@ def _avfoundation_sources() -> list[Source]:
         if match:
             index, name = int(match.group(1)), match.group(2)
             sources.append(
-                Source(index, name, "avfoundation", "", "AVAILABLE",
-                       monitor=_is_loopback(name))
+                Source(index, name, "avfoundation", "", "AVAILABLE", monitor=False)
             )
     return sources
 
 
-def _is_loopback(name: str) -> bool:
-    lowered = name.lower()
-    return any(hint in lowered for hint in _LOOPBACK_HINTS)
+def _mac_availability() -> str | None:
+    """Indirection so tests can stand in for the Apple frameworks."""
+    from .screencapture import availability
+
+    return availability()
 
 
 def _mac_system_spec() -> CaptureSpec:
-    loopback = [s for s in _avfoundation_sources() if s.is_monitor]
-    if loopback:
-        chosen = loopback[0]
-        return CaptureSpec("avfoundation", f":{chosen.index}", chosen.name)
-
-    raise SystemAudioUnavailable(
-        "no loopback device found - macOS cannot capture system audio without "
-        "one. Run `sttop doctor` for the two commands that set it up."
-    )
+    reason = _mac_availability()
+    if reason is not None:
+        raise SystemAudioUnavailable(f"{reason} - see `sttop doctor`")
+    return CaptureSpec("screencapture", "system", "system audio (ScreenCaptureKit)")
 
 
 # -- platform-neutral API --------------------------------------------------
@@ -253,7 +235,9 @@ def diagnose() -> list[tuple[str, str]]:
     from . import ffmpeg as ffmpeg_mod
 
     rows = [("platform", sys.platform), ("ffmpeg", ffmpeg_mod.describe())]
-    if not MACOS:
+    if MACOS:
+        rows.append(("screencapturekit", _mac_availability() or "available"))
+    else:
         rows.append(
             ("pactl", shutil.which("pactl") or "not found (defaults still work)")
         )

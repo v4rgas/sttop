@@ -141,18 +141,17 @@ def _spec_for(devices, source):
     return devices.CaptureSpec("pulse", source.name, source.name)
 
 
-#: Printed by `sttop doctor` when macOS has no system-audio source. There is
-#: no Apple-provided monitor device, so this needs a loopback driver.
+#: Printed by `sttop doctor` when macOS system audio is unavailable. Nothing
+#: to install - it is a permission, or a macOS too old for ScreenCaptureKit.
 _MACOS_SYSTEM_AUDIO_HELP = """
-macOS has no equivalent of a PulseAudio monitor, so system audio needs a
-loopback device:
+System audio uses ScreenCaptureKit, which needs no driver and does not change
+your output device - but it does need permission, granted to the terminal
+sttop runs in:
 
-  brew install blackhole-2ch
+  System Settings > Privacy & Security > Screen & System Audio Recording
 
-Then open Audio MIDI Setup, create a Multi-Output Device containing both your
-speakers and BlackHole, and select it as the system output - that is what
-lets you keep hearing the call while sttop records it. sttop picks BlackHole
-up automatically once it exists; nothing to configure here.
+Enable your terminal there, then restart it - macOS only re-reads that
+permission when the app launches. macOS 13 (Ventura) or newer is required.
 
 Until then sttop records the microphone only - your side of the call.
 """

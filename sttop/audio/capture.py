@@ -24,6 +24,7 @@ import numpy as np
 from .. import FRAME_BYTES, SAMPLE_RATE
 from .devices import AudioError, CaptureSpec
 from .ffmpeg import FFmpegMissing, ffmpeg_bin
+from .pcm import Reframer
 
 FrameCallback = Callable[[bytes], None]
 ErrorCallback = Callable[[str], None]
@@ -67,6 +68,61 @@ def build_command(spec: CaptureSpec, *extra: str) -> list[str]:
     ]
 
 
+class FrameWriter:
+    """What every capture backend does with PCM once it has it.
+
+    Framing, the level meter and the WAV sidecar are identical whether the
+    bytes came from an ffmpeg pipe or an Apple audio callback, and they are
+    the parts with behaviour worth testing - so they live here once rather
+    than being reimplemented per backend.
+
+    Not thread-safe: callers hop to the event loop first.
+    """
+
+    def __init__(self, on_frame: FrameCallback, wav_path: Path | None) -> None:
+        self._on_frame = on_frame
+        self._wav_path = wav_path
+        self._wav: wave.Wave_write | None = None
+        self._reframer = Reframer(self._emit)
+
+        #: Smoothed 0..1 loudness, for the level meters in the TUI.
+        self.level: float = 0.0
+        self.frames_seen: int = 0
+
+    def open(self) -> None:
+        if self._wav_path is None:
+            return
+        self._wav_path.parent.mkdir(parents=True, exist_ok=True)
+        self._wav = wave.open(str(self._wav_path), "wb")
+        self._wav.setnchannels(1)
+        self._wav.setsampwidth(2)
+        self._wav.setframerate(SAMPLE_RATE)
+
+    def feed(self, pcm: bytes) -> None:
+        """Accepts any chunk size; emits only whole frames."""
+        self._reframer.feed(pcm)
+
+    def _emit(self, frame: bytes) -> None:
+        self.frames_seen += 1
+        self._update_level(frame)
+        if self._wav is not None:
+            self._wav.writeframes(frame)
+        self._on_frame(frame)
+
+    def _update_level(self, frame: bytes) -> None:
+        samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
+        rms = float(np.sqrt(np.mean(samples * samples)))
+        weight = _ATTACK if rms > self.level else _RELEASE
+        self.level = (1 - weight) * self.level + weight * min(rms * _GAIN, 1.0)
+
+    def close(self) -> None:
+        if self._wav is not None:
+            with contextlib.suppress(Exception):
+                self._wav.close()
+            self._wav = None
+        self.level = 0.0
+
+
 class SourceCapture:
     """Streams one audio source, handing fixed-size PCM frames to a callback.
 
@@ -84,20 +140,26 @@ class SourceCapture:
     ) -> None:
         self.label = label
         self.spec = spec
-        self._on_frame = on_frame
         self._on_error = on_error
-        self._wav_path = wav_path
+        self._writer = FrameWriter(on_frame, wav_path)
 
         self._proc: asyncio.subprocess.Process | None = None
         self._task: asyncio.Task | None = None
         self._stderr_task: asyncio.Task | None = None
         self._stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
-        self._wav: wave.Wave_write | None = None
         self._stopping = False
 
-        #: Smoothed 0..1 loudness, for the level meters in the TUI.
-        self.level: float = 0.0
-        self.frames_seen: int = 0
+    @property
+    def level(self) -> float:
+        return self._writer.level
+
+    @level.setter
+    def level(self, value: float) -> None:
+        self._writer.level = value
+
+    @property
+    def frames_seen(self) -> int:
+        return self._writer.frames_seen
 
     async def start(self) -> None:
         self._proc = await asyncio.create_subprocess_exec(
@@ -106,7 +168,7 @@ class SourceCapture:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            self._open_wav()
+            self._writer.open()
         except Exception:
             # Half-started is not a state a caller can clean up: whoever gets
             # the exception has no capture object to stop.
@@ -118,25 +180,12 @@ class SourceCapture:
             self._drain_stderr(), name=f"capture-{self.label}-stderr"
         )
 
-    def _open_wav(self) -> None:
-        if self._wav_path is None:
-            return
-        self._wav_path.parent.mkdir(parents=True, exist_ok=True)
-        self._wav = wave.open(str(self._wav_path), "wb")
-        self._wav.setnchannels(1)
-        self._wav.setsampwidth(2)
-        self._wav.setframerate(SAMPLE_RATE)
-
     async def _pump(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
         try:
             while True:
                 frame = await self._proc.stdout.readexactly(FRAME_BYTES)
-                self.frames_seen += 1
-                self._update_level(frame)
-                if self._wav is not None:
-                    self._wav.writeframes(frame)
-                self._on_frame(frame)
+                self._writer.feed(frame)
         except asyncio.CancelledError:
             raise
         except asyncio.IncompleteReadError:
@@ -159,12 +208,6 @@ class SourceCapture:
             line = raw.decode(errors="replace").strip()
             if line:
                 self._stderr_tail.append(line)
-
-    def _update_level(self, frame: bytes) -> None:
-        samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
-        rms = float(np.sqrt(np.mean(samples * samples)))
-        weight = _ATTACK if rms > self.level else _RELEASE
-        self.level = (1 - weight) * self.level + weight * min(rms * _GAIN, 1.0)
 
     def _report_failure(self, detail: str | None = None) -> None:
         # A source that has stopped producing must not keep a live-looking
@@ -210,11 +253,7 @@ class SourceCapture:
                 await self._proc.wait()
             self._proc = None
 
-        if self._wav is not None:
-            with contextlib.suppress(Exception):
-                self._wav.close()
-            self._wav = None
-        self.level = 0.0
+        self._writer.close()
 
 
 def check_source(spec: CaptureSpec, seconds: float = 1.0) -> float:

@@ -87,7 +87,7 @@ AVF_LISTING = """\
 [AVFoundation indev @ 0x7f8] [0] FaceTime HD Camera
 [AVFoundation indev @ 0x7f8] AVFoundation audio devices:
 [AVFoundation indev @ 0x7f8] [0] MacBook Pro Microphone
-[AVFoundation indev @ 0x7f8] [1] BlackHole 2ch
+[AVFoundation indev @ 0x7f8] [1] External Headset
 : Input/output error
 """
 
@@ -108,25 +108,26 @@ def test_avfoundation_listing_keeps_only_audio_devices(monkeypatch):
     fake_avf(monkeypatch)
     assert [s.name for s in devices.list_sources()] == [
         "MacBook Pro Microphone",
-        "BlackHole 2ch",
+        "External Headset",
     ]
 
 
-def test_a_loopback_device_becomes_the_system_source(monkeypatch):
+def test_system_audio_comes_from_screencapturekit(monkeypatch):
+    """No device to pick and nothing to install - it is the OS-level tap."""
     fake_avf(monkeypatch)
+    monkeypatch.setattr(devices, "_mac_availability", lambda: None)
 
     spec = devices.resolve(None, monitor=True)
-    assert (spec.backend, spec.device, spec.label) == (
-        "avfoundation", ":1", "BlackHole 2ch",
-    )
+    assert spec.backend == "screencapture"
 
 
-def test_no_loopback_device_is_survivable(monkeypatch):
+def test_an_unusable_screencapturekit_is_survivable(monkeypatch):
     """Recording only the mic is worth far more than refusing to start, so
     this failure gets its own class for the engine to catch."""
-    fake_avf(monkeypatch, listing="[x] AVFoundation audio devices:\n[x] [0] Built-in\n")
+    fake_avf(monkeypatch)
+    monkeypatch.setattr(devices, "_mac_availability", lambda: "macOS 12.6 is too old")
 
-    with pytest.raises(devices.SystemAudioUnavailable, match="sttop doctor"):
+    with pytest.raises(devices.SystemAudioUnavailable, match="too old"):
         devices.resolve(None, monitor=True)
 
 
