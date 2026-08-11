@@ -87,3 +87,15 @@ def test_filenames_do_not_collide(tmp_path):
 
 def test_list_sessions_on_a_missing_directory(tmp_path):
     assert list_sessions(tmp_path / "nope") == []
+
+
+def test_rename_leaves_no_debris(tmp_path):
+    """The rewrite goes via a temporary file so a kill mid-rename cannot
+    truncate the session. Nothing of it may survive in the sessions dir."""
+    journal = Journal.create(tmp_path, "demo")
+    journal.append(utterance("spk1", 0.0, "one"))
+    journal.rename_speaker("spk1", "Ana")
+    journal.close(1.0)
+
+    assert [p.name for p in tmp_path.iterdir()] == [journal.path.name]
+    assert list_sessions(tmp_path) == [journal.path]

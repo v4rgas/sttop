@@ -81,6 +81,33 @@ def test_pause_discards_audio():
     assert out == []
 
 
+def test_pause_closes_the_open_utterance():
+    """Pausing mid-sentence must emit what was said, not splice it onto
+    whatever is said after the gap."""
+    seg, out = make()
+    feed(seg, speech, 50)
+    seg.paused = True
+    assert len(out) == 1
+
+    seg.paused = False
+    feed(seg, speech, 50)
+    feed(seg, quiet, 30)
+    assert len(out) == 2
+    assert out[1].start >= out[0].end
+
+
+def test_trigger_sensitivity_does_not_follow_pad_ms():
+    """`pad_ms` says how much audio to keep from before speech onset. It must
+    not also decide how much speech is needed to open a segment."""
+    counts = []
+    for pad_ms in (60, 600):
+        seg, out = make(pad_ms=pad_ms, min_segment_ms=20)
+        feed(seg, speech, 12)  # a short burst, just over the trigger window
+        feed(seg, quiet, 30)
+        counts.append(len(out))
+    assert counts == [1, 1], f"pad_ms changed trigger sensitivity: {counts}"
+
+
 def test_close_emits_the_open_segment():
     seg, out = make()
     feed(seg, speech, 50)

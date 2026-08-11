@@ -24,8 +24,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _have_ffmpeg() -> bool:
+    """Enough to prepare the sample - the diarizer needs no audio server."""
+    return bool(shutil.which("ffmpeg"))
+
+
 def _have_audio() -> bool:
-    if not (shutil.which("ffmpeg") and shutil.which("pactl")):
+    if not (_have_ffmpeg() and shutil.which("pactl")):
         return False
     probe = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True)
     return probe.returncode == 0 and bool(probe.stdout.strip())
@@ -33,6 +38,8 @@ def _have_audio() -> bool:
 
 @pytest.fixture(scope="session")
 def speech_wav(tmp_path_factory) -> Path:
+    if not _have_ffmpeg():
+        pytest.skip("ffmpeg not on PATH")  # a skip, not a fixture error
     directory = tmp_path_factory.mktemp("audio")
     flac, wav = directory / "sample.flac", directory / "sample.wav"
     urllib.request.urlretrieve(SAMPLE_URL, flac)

@@ -71,10 +71,11 @@ class Engine:
         self._on_error = on_error or (lambda message: None)
 
         self.transcriber: stt.Transcriber | None = None
-        self.diarizer = None
+        self.diarizer: diarize_mod.SpeakerLabeler | None = None
         self.journal: Journal | None = None
-        self.mic_source: str | None = None
-        self.sys_source: str | None = None
+        #: Resolved by prepare(); empty until then.
+        self.mic_source: str = ""
+        self.sys_source: str = ""
 
         self._captures: list[SourceCapture] = []
         self._segmenters: dict[str, Segmenter] = {}
@@ -95,7 +96,7 @@ class Engine:
             self._executor, self._resolve_sources
         )
         self.transcriber = await loop.run_in_executor(
-            self._executor, stt.build, self.config
+            self._executor, stt.build, self.config.stt
         )
         self.diarizer = await loop.run_in_executor(
             self._executor, diarize_mod.build, self.config.diarize
@@ -116,8 +117,8 @@ class Engine:
         self.journal = Journal.create(
             Path(self.config.sessions_dir),
             title,
-            mic_source=self.mic_source or "",
-            sys_source=self.sys_source or "",
+            mic_source=self.mic_source,
+            sys_source=self.sys_source,
             backend=self.transcriber.describe,
         )
         self._t0 = time.monotonic()
@@ -142,11 +143,19 @@ class Engine:
         return self.journal.path
 
     async def stop(self, drain_timeout: float = 30.0) -> Path | None:
-        """Stop capture, then finish transcribing whatever is still queued."""
-        if not self._running:
-            return self.journal.path if self.journal else None
-        self._running = False
+        """Stop capture, then finish transcribing whatever is still queued.
 
+        Safe to call at any point in the lifecycle, and always releases: a run
+        that failed *during* start() has still loaded the models and started
+        the executor thread, and those must go back whether or not any audio
+        was ever captured.
+        """
+        if self._running:
+            self._running = False
+            await self._drain(drain_timeout)
+        return self._release()
+
+    async def _drain(self, timeout: float) -> None:
         for capture in self._captures:
             await capture.stop()
         for segmenter in self._segmenters.values():
@@ -155,20 +164,29 @@ class Engine:
         self._queue.put_nowait(None)  # sentinel: drain, then finish
         if self._consumer is not None:
             try:
-                await asyncio.wait_for(self._consumer, timeout=drain_timeout)
+                await asyncio.wait_for(self._consumer, timeout=timeout)
             except TimeoutError:
-                self._on_error(f"[stt] gave up draining after {drain_timeout:.0f}s")
+                self._on_error(f"[stt] gave up draining after {timeout:.0f}s")
                 self._consumer.cancel()
             self._consumer = None
 
+    def _release(self) -> Path | None:
+        """Close the journal and hand back the models, executor and captures.
+
+        Leaves the engine prepared-from-scratch rather than half-alive: a
+        transcriber whose model has been closed must not look loaded to
+        start(), or the next run transcribes against nothing.
+        """
         path = None
         if self.journal is not None:
             path = self.journal.close(self._session_clock())
-        if self.transcriber is not None:
-            self.transcriber.close()
-        if self.diarizer is not None:
-            self.diarizer.close()
+        for resource in (self.transcriber, self.diarizer):
+            if resource is not None:
+                resource.close()
+        self.transcriber = None
+        self.diarizer = None
         self._executor.shutdown(wait=True)
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
         self._captures.clear()
         self._segmenters.clear()
         return path

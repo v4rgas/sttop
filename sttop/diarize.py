@@ -17,6 +17,7 @@ accurate but could not label a segment until the meeting ended.
 from __future__ import annotations
 
 import threading
+from typing import Protocol
 
 import numpy as np
 
@@ -25,7 +26,27 @@ from .config import DiarizeConfig
 from .stt.base import pcm_to_float32
 
 SELF_LABEL = "you"
+OTHER_LABEL = "them"
 UNKNOWN_LABEL = "spk?"
+
+
+def speaker_name(index: int) -> str:
+    """The label for the nth clustered voice, counting from zero."""
+    return f"spk{index + 1}"
+
+
+class SpeakerLabeler(Protocol):
+    """What the engine needs from a diarizer - see `Transcriber` for the twin."""
+
+    #: Shown in the TUI status bar, e.g. "ecapa @0.50".
+    describe: str
+
+    @property
+    def speaker_count(self) -> int: ...
+
+    def label(self, segment: Segment, is_mic: bool) -> str: ...
+
+    def close(self) -> None: ...
 
 
 class NullDiarizer:
@@ -37,7 +58,7 @@ class NullDiarizer:
         self.describe = f"diarize off ({reason})"
 
     def label(self, segment: Segment, is_mic: bool) -> str:
-        return SELF_LABEL if is_mic else "them"
+        return SELF_LABEL if is_mic else OTHER_LABEL
 
     def close(self) -> None:
         pass
@@ -74,8 +95,9 @@ class Diarizer:
         if segment.duration < self.config.min_speech_s:
             # Too short to embed reliably. Assume the current speaker is still
             # talking if this lands right after their last utterance.
-            if self._last_label and segment.start - self._last_end < 5.0:
-                return self._last_label
+            with self._lock:
+                if self._last_label and segment.start - self._last_end < 5.0:
+                    return self._last_label
             return UNKNOWN_LABEL
 
         try:
@@ -83,10 +105,13 @@ class Diarizer:
         except Exception:
             return UNKNOWN_LABEL
 
+        # `_last_label` and `_last_end` describe the same utterance, so they are
+        # updated under the lock that the reader above holds: a torn pair would
+        # carry one utterance's speaker into another's timing.
         with self._lock:
             label = self._assign(embedding)
-        self._last_label = label
-        self._last_end = segment.end
+            self._last_label = label
+            self._last_end = segment.end
         return label
 
     def _embed(self, pcm: bytes) -> np.ndarray:
@@ -112,24 +137,24 @@ class Diarizer:
             norm = np.linalg.norm(merged)
             self._centroids[best_index] = merged / norm if norm else merged
             self._counts[best_index] = count + 1
-            return f"spk{best_index + 1}"
+            return speaker_name(best_index)
 
         # Hysteresis. Without it, one noisy embedding from an established
         # speaker mints a whole new one, and a real meeting ends up with a
         # dozen phantom participants. In the grey zone we take the nearest
         # match but leave its centroid alone, so a bad frame cannot poison it.
         if best_index >= 0 and best_score >= self.config.threshold - self.config.margin:
-            return f"spk{best_index + 1}"
+            return speaker_name(best_index)
 
         self._centroids.append(embedding)
         self._counts.append(1)
-        return f"spk{len(self._centroids)}"
+        return speaker_name(len(self._centroids) - 1)
 
     def close(self) -> None:
         self._encoder = None
 
 
-def build(config: DiarizeConfig):
+def build(config: DiarizeConfig) -> SpeakerLabeler:
     """Return a diarizer, degrading to NullDiarizer rather than failing the run."""
     if not config.enabled:
         return NullDiarizer("disabled")

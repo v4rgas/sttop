@@ -32,6 +32,13 @@ ErrorCallback = Callable[[str], None]
 #: and an unbounded buffer would grow for the whole session.
 _STDERR_TAIL_LINES = 5
 
+#: `level` is a meter reading, not a measurement: speech sits well below full
+#: scale, so it is gained up to fill the bar, and smoothed asymmetrically -
+#: rising fast, falling slow - so brief peaks stay visible for a frame or two.
+_GAIN = 4.0
+_ATTACK = 0.5
+_RELEASE = 0.15
+
 
 def _ffmpeg_command(pulse_source: str, *extra: str) -> list[str]:
     """The one true ffmpeg invocation: one pulse source in, 16 kHz mono s16le
@@ -87,22 +94,32 @@ class SourceCapture:
         if not shutil.which("ffmpeg"):
             raise AudioError("ffmpeg not found on PATH")
 
-        if self._wav_path is not None:
-            self._wav_path.parent.mkdir(parents=True, exist_ok=True)
-            self._wav = wave.open(str(self._wav_path), "wb")
-            self._wav.setnchannels(1)
-            self._wav.setsampwidth(2)
-            self._wav.setframerate(SAMPLE_RATE)
-
         self._proc = await asyncio.create_subprocess_exec(
             *_ffmpeg_command(self.pulse_source),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        try:
+            self._open_wav()
+        except Exception:
+            # Half-started is not a state a caller can clean up: whoever gets
+            # the exception has no capture object to stop.
+            await self.stop()
+            raise
+
         self._task = asyncio.create_task(self._pump(), name=f"capture-{self.label}")
         self._stderr_task = asyncio.create_task(
             self._drain_stderr(), name=f"capture-{self.label}-stderr"
         )
+
+    def _open_wav(self) -> None:
+        if self._wav_path is None:
+            return
+        self._wav_path.parent.mkdir(parents=True, exist_ok=True)
+        self._wav = wave.open(str(self._wav_path), "wb")
+        self._wav.setnchannels(1)
+        self._wav.setsampwidth(2)
+        self._wav.setframerate(SAMPLE_RATE)
 
     async def _pump(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
@@ -114,10 +131,17 @@ class SourceCapture:
                 if self._wav is not None:
                     self._wav.writeframes(frame)
                 self._on_frame(frame)
+        except asyncio.CancelledError:
+            raise
         except asyncio.IncompleteReadError:
             # The pipe closed: either we are stopping, or the source went away.
             if not self._stopping:
                 self._report_failure()
+        except Exception as exc:
+            # Anything else kills this task, and a dead pump is silent: frames
+            # stop arriving and the meter freezes at its last value, which
+            # reads as a working capture. Say so instead.
+            self._report_failure(f"{type(exc).__name__}: {exc}")
 
     async def _drain_stderr(self) -> None:
         """Read stderr continuously. Not only for the message - an unread pipe
@@ -133,19 +157,29 @@ class SourceCapture:
     def _update_level(self, frame: bytes) -> None:
         samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
         rms = float(np.sqrt(np.mean(samples * samples)))
-        # Attack fast, release slow, so brief peaks stay visible on the meter.
-        weight = 0.5 if rms > self.level else 0.15
-        self.level = (1 - weight) * self.level + weight * min(rms * 4.0, 1.0)
+        weight = _ATTACK if rms > self.level else _RELEASE
+        self.level = (1 - weight) * self.level + weight * min(rms * _GAIN, 1.0)
 
-    def _report_failure(self) -> None:
+    def _report_failure(self, detail: str | None = None) -> None:
+        # A source that has stopped producing must not keep a live-looking
+        # meter, or the UI contradicts the warning printed right below it.
+        self.level = 0.0
         if self._on_error is None:
             return
-        code = self._proc.returncode if self._proc is not None else None
-        detail = self._stderr_tail[-1] if self._stderr_tail else f"ffmpeg exited {code}"
+        if detail is None:
+            code = self._proc.returncode if self._proc is not None else None
+            detail = (
+                self._stderr_tail[-1] if self._stderr_tail else f"ffmpeg exited {code}"
+            )
         self._on_error(f"[{self.label}] {detail}")
 
     async def stop(self) -> None:
-        """Terminate ffmpeg and await the reader tasks. Idempotent."""
+        """Terminate ffmpeg, await the reader tasks, close the WAV. Idempotent.
+
+        Every step runs even if an earlier one failed: teardown that gives up
+        halfway leaves an ffmpeg running and a WAV missing its last seconds,
+        which is worse than whatever raised.
+        """
         self._stopping = True
 
         if self._proc is not None and self._proc.returncode is None:
@@ -156,12 +190,14 @@ class SourceCapture:
             task = getattr(self, attr)
             if task is not None:
                 task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
+                # The task may already have died of something other than the
+                # cancellation; it was reported when it happened.
+                with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
                 setattr(self, attr, None)
 
         if self._proc is not None:
-            with contextlib.suppress(asyncio.TimeoutError):
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._proc.wait(), timeout=3)
             if self._proc.returncode is None:
                 self._proc.kill()
@@ -169,7 +205,8 @@ class SourceCapture:
             self._proc = None
 
         if self._wav is not None:
-            self._wav.close()
+            with contextlib.suppress(Exception):
+                self._wav.close()
             self._wav = None
         self.level = 0.0
 

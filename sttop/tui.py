@@ -10,6 +10,7 @@ from textual.containers import Horizontal
 from textual.widgets import Footer, Input, RichLog, Static
 
 from .config import Config
+from .diarize import SELF_LABEL
 from .engine import Engine, EngineStatus
 from .journal import Utterance, clock
 from .terminal import detect_theme
@@ -59,7 +60,7 @@ class TranscriptLog(RichLog):
         self._colors: dict[str, str] = {}
 
     def color_for(self, speaker: str) -> str:
-        if speaker == "you":
+        if speaker == SELF_LABEL:
             return "bold cyan"
         if speaker not in self._colors:
             index = len(self._colors) % len(SPEAKER_COLORS)

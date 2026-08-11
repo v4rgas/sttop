@@ -126,9 +126,14 @@ class Journal:
             text = self.path.read_text(encoding="utf-8")
             replaced = text.count(f"**{old}**")
             if replaced:
-                self.path.write_text(
+                # Write-then-rename: rewriting in place would leave the whole
+                # session truncated if we were killed mid-write, and renaming
+                # is something you do *during* a meeting.
+                temporary = self.path.with_name(self.path.name + ".tmp")
+                temporary.write_text(
                     text.replace(f"**{old}**", f"**{new}**"), encoding="utf-8"
                 )
+                temporary.replace(self.path)
                 # The handle still points at the old offset; reopen at the end.
                 if flush_needed:
                     self._file.close()

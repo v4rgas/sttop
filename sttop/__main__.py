@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .config import CONFIG_PATH, Config, write_default_config
+from .config import CONFIG_PATH, Config, ConfigError, write_default_config
 from .stt import BACKENDS
 
 
@@ -20,9 +20,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"sttop {__version__}")
     parser.add_argument("-c", "--config", type=Path, help=f"default: {CONFIG_PATH}")
 
+    # `--config` reads as a global option, so accept it on either side of the
+    # subcommand. SUPPRESS is what makes that work: without it the subcommand's
+    # own default would overwrite a value already given before the subcommand.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "-c", "--config", type=Path, default=argparse.SUPPRESS, help=argparse.SUPPRESS
+    )
+
     sub = parser.add_subparsers(dest="command")
 
-    record = sub.add_parser("record", help="start a session (default)")
+    def command(name: str, summary: str) -> argparse.ArgumentParser:
+        return sub.add_parser(name, help=summary, parents=[common])
+
+    record = command("record", "start a session (default)")
     record.add_argument("-t", "--title", help="session title, used in the filename")
     record.add_argument("--mic", help="mic source name or substring")
     record.add_argument("--system", help="system/monitor source name or substring")
@@ -34,16 +45,44 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--no-diarize", action="store_true", help="skip speaker id")
     record.add_argument("--save-wav", action="store_true", help="keep the raw audio")
 
-    devices_cmd = sub.add_parser("devices", help="list audio sources")
+    devices_cmd = command("devices", "list audio sources")
     devices_cmd.add_argument(
         "--test", action="store_true", help="record 1s from each and report levels"
     )
 
-    sub.add_parser("sessions", help="list recorded sessions")
-    sub.add_parser("theme", help="show the detected terminal colour scheme")
-    sub.add_parser("config", help="write a default config file")
+    command("sessions", "list recorded sessions")
+    command("theme", "show the detected terminal colour scheme")
+    command("config", "write a default config file")
 
     return parser
+
+
+#: Global options that may appear before the subcommand, and whether the option
+#: swallows the token after it.
+_GLOBAL_OPTIONS = {"-c": True, "--config": True, "-h": False, "--help": False,
+                   "--version": False}
+
+
+def with_default_command(argv: list[str], commands: set[str]) -> list[str]:
+    """Insert `record` when no subcommand was given.
+
+    `sttop -t standup` means `sttop record -t standup`. Rather than parse twice
+    and hope the first attempt fails cleanly - it does not, since `-t` is a
+    record option and argparse rejects it outright - the command is filled in
+    before parsing, so there is only ever one well-formed parse.
+    """
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in commands:
+            return argv
+        option, joined, _ = token.partition("=")
+        if option not in _GLOBAL_OPTIONS:
+            break  # a record option, or a positional - record starts here
+        # Skip the global option, plus its value when given as a separate
+        # token (`-c path`) rather than joined on (`--config=path`).
+        index += 2 if _GLOBAL_OPTIONS[option] and not joined else 1
+    return [*argv[:index], "record", *argv[index:]]
 
 
 def cmd_devices(config: Config, args) -> int:
@@ -74,15 +113,12 @@ def cmd_devices(config: Config, args) -> int:
 
 
 def cmd_theme(config: Config) -> int:
-    import os
+    from .terminal import detect_theme, theme_sources
 
-    from .terminal import detect_theme, from_colorfgbg, query_osc11
-
-    colorfgbg = os.environ.get("COLORFGBG")
-    print(f"COLORFGBG   {colorfgbg or '<unset>'} -> {from_colorfgbg(colorfgbg)}")
-    print(f"OSC 11      {query_osc11() or '<no reply>'}")
+    for name, verdict in theme_sources():
+        print(f"{name:<12}{verdict or '<no answer>'}")
     print(f"configured  {config.ui.theme}")
-    print(f"\nusing      {detect_theme(config.ui.theme)}")
+    print(f"\nusing       {detect_theme(config.ui.theme)}")
     return 0
 
 
@@ -125,10 +161,24 @@ def cmd_record(config: Config, args) -> int:
     return 0
 
 
+COMMANDS = {"record", "devices", "sessions", "theme", "config"}
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
     parser = build_parser()
-    args = parser.parse_args(argv)
-    config = Config.load(args.config)
+    args = parser.parse_args(with_default_command(argv, COMMANDS))
+
+    if args.command == "config":  # writing a config must not require a valid one
+        path = write_default_config(args.config)
+        print(f"wrote {path}")
+        return 0
+
+    try:
+        config = Config.load(args.config)
+    except ConfigError as exc:
+        print(f"error: bad config: {exc}", file=sys.stderr)
+        return 1
 
     if args.command == "devices":
         return cmd_devices(config, args)
@@ -136,13 +186,6 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_sessions(config)
     if args.command == "theme":
         return cmd_theme(config)
-    if args.command == "config":
-        path = write_default_config(args.config)
-        print(f"wrote {path}")
-        return 0
-
-    if args.command is None:  # bare `sttop` records with defaults
-        args = parser.parse_args([*(argv or sys.argv[1:]), "record"])
     return cmd_record(config, args)
 
 

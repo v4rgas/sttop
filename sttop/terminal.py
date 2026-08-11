@@ -19,6 +19,8 @@ import os
 import re
 import select
 import sys
+import time
+from collections.abc import Iterator
 
 DARK = "ansi-dark"
 LIGHT = "ansi-light"
@@ -85,8 +87,14 @@ def query_osc11(timeout: float = 0.15) -> str | None:
 
         reply = b""
         # Terminals that do not implement OSC 11 simply never answer, so the
-        # whole thing is bounded by the timeout rather than by a sentinel.
-        while select.select([fd], [], [], timeout)[0]:
+        # whole thing is bounded by a deadline rather than by a sentinel. The
+        # deadline is for the query as a whole: re-arming select with the full
+        # timeout each pass would let unrelated input (a paste, buffered
+        # keystrokes) hold the terminal in raw mode for far longer.
+        deadline = time.monotonic() + timeout
+        while (left := deadline - time.monotonic()) > 0 and select.select(
+            [fd], [], [], left
+        )[0]:
             chunk = os.read(fd, 64)
             if not chunk:
                 break
@@ -96,7 +104,7 @@ def query_osc11(timeout: float = 0.15) -> str | None:
     except (OSError, ValueError):
         return None
     finally:
-        with_suppressed_errors(fd, saved)
+        _restore_tty(fd, saved)
 
     value = parse_osc11(reply)
     if value is None:
@@ -104,8 +112,8 @@ def query_osc11(timeout: float = 0.15) -> str | None:
     return LIGHT if value > 0.5 else DARK
 
 
-def with_suppressed_errors(fd: int, saved) -> None:
-    """Restore terminal attributes, never raising over a broken tty."""
+def _restore_tty(fd: int, saved) -> None:
+    """Put the terminal back the way we found it, never raising over a dead tty."""
     try:
         import termios
 
@@ -114,12 +122,23 @@ def with_suppressed_errors(fd: int, saved) -> None:
         pass
 
 
+def theme_sources() -> Iterator[tuple[str, str | None]]:
+    """Each source of evidence and its verdict, in the order they are consulted.
+
+    Detection policy lives here rather than in the caller, so `sttop theme`
+    reports what `detect_theme` actually does instead of a copy that can drift.
+    Lazy on purpose: a caller that stops at the first answer never pays for the
+    OSC 11 query, which costs a timeout and takes over the tty.
+    """
+    yield "COLORFGBG", from_colorfgbg(os.environ.get("COLORFGBG"))
+    yield "OSC 11", query_osc11()
+
+
 def detect_theme(preference: str = "auto") -> str:
     """Resolve a configured theme name, following the terminal when asked to."""
     if preference and preference != "auto":
         return preference
-    return (
-        from_colorfgbg(os.environ.get("COLORFGBG"))
-        or query_osc11()
-        or DARK
-    )
+    for _, verdict in theme_sources():
+        if verdict:
+            return verdict
+    return DARK

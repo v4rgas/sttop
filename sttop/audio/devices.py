@@ -42,8 +42,8 @@ def list_sources() -> list[Source]:
     sources = []
     for line in _pactl("list", "short", "sources").splitlines():
         parts = line.split("\t")
-        if len(parts) < 5:
-            continue
+        if len(parts) < 5 or not parts[0].isdigit():
+            continue  # a header or some other row shape we do not understand
         index, name, driver, spec, state = parts[:5]
         sources.append(Source(int(index), name, driver, spec, state))
     return sources
@@ -70,8 +70,12 @@ def resolve(requested: str | None, *, monitor: bool) -> str:
 
     A requested name may be a full source name or a unique substring of one,
     so you can write `system_source = "hdmi"` instead of the full alsa id.
+
+    Blank means "no preference", the same as unset - otherwise the empty string
+    goes on to match every source and resolution fails as ambiguous, which is a
+    baffling way to punish someone for writing `mic_source = ""`.
     """
-    if requested is None:
+    if requested is None or not requested.strip():
         return default_sink_monitor() if monitor else default_source()
 
     names = [s.name for s in list_sources()]

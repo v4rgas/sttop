@@ -14,9 +14,13 @@ from ..config import VadConfig
 
 FRAME_S = FRAME_MS / 1000.0
 
-#: Fraction of the pre-roll window that must be speech before a segment opens.
-#: Measured against the *full* window, not the frames seen so far, so a single
-#: stray voiced frame at stream start cannot trigger.
+#: Window the trigger decision is measured over, and the fraction of it that
+#: must be speech before a segment opens. Measured against the *full* window,
+#: not the frames seen so far, so a single stray voiced frame at stream start
+#: cannot trigger. Kept separate from `pad_ms`: how much audio to keep from
+#: before speech onset is a question about clipped syllables, while this is a
+#: question about sensitivity, and tuning one must not silently move the other.
+TRIGGER_WINDOW_MS = 300
 TRIGGER_RATIO = 0.6
 
 
@@ -59,8 +63,9 @@ class Segmenter:
         self._max_frames = max(1, int(config.max_segment_s / FRAME_S))
         self._min_frames = max(1, config.min_segment_ms // FRAME_MS)
 
+        self._trigger_frames = max(1, TRIGGER_WINDOW_MS // FRAME_MS)
         self._preroll: deque[bytes] = deque(maxlen=self._pad_frames)
-        self._voiced: deque[bool] = deque(maxlen=self._pad_frames)
+        self._voiced: deque[bool] = deque(maxlen=self._trigger_frames)
         self._buffer: list[bytes] = []
         self._triggered = False
         self._silence_run = 0
@@ -98,7 +103,7 @@ class Segmenter:
             self._preroll.append(frame)
             self._voiced.append(speech)
             # Enough of the recent window is speech - open a segment.
-            if sum(self._voiced) >= TRIGGER_RATIO * self._voiced.maxlen:
+            if sum(self._voiced) >= TRIGGER_RATIO * self._trigger_frames:
                 self._triggered = True
                 self._segment_start_index = index - len(self._preroll) + 1
                 self._buffer = list(self._preroll)
@@ -115,13 +120,17 @@ class Segmenter:
         if self._silence_run >= self._silence_frames:
             self._flush(trailing_silence=self._silence_run)
         elif len(self._buffer) >= self._max_frames:
+            # Carry the silence run across the split: the speaker may already
+            # be most of the way to a pause, and restarting the count would
+            # hold the next segment open for a further full silence_ms.
+            carried = self._silence_run
             self._flush(trailing_silence=0)
             # Long monologue: stay open so the next chunk continues immediately.
             self._triggered = True
             self._segment_start_index = index + 1
             self._buffer = []
             self._voiced_count = 0
-            self._silence_run = 0
+            self._silence_run = carried
 
     def _flush(self, trailing_silence: int) -> None:
         frames = self._buffer

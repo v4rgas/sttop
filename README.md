@@ -117,7 +117,10 @@ To push a Radeon card at the *diarization* half, resync torch against the ROCm i
 
 ## Config
 
-`~/.config/sttop/config.toml` (write a commented default with `sttop config`):
+`~/.config/sttop/config.toml`. Run `sttop config` to write a default with every
+knob and its documentation in it; the comments come from the source, so the file
+never drifts from the code. Anything you leave out keeps its default, and blank
+means "you decide" wherever a default is picked for you.
 
 ```toml
 sessions_dir = "~/.local/share/sttop/sessions"

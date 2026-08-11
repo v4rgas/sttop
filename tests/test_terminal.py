@@ -57,3 +57,21 @@ def test_auto_falls_back_to_dark(monkeypatch):
     monkeypatch.delenv("COLORFGBG", raising=False)
     monkeypatch.setattr("sttop.terminal.query_osc11", lambda *a, **k: None)
     assert detect_theme("auto") == DARK
+
+
+def test_colorfgbg_answer_skips_the_tty_query(monkeypatch):
+    """The OSC 11 query costs a timeout and takes over the terminal, so it must
+    not run when the environment has already answered."""
+    monkeypatch.setenv("COLORFGBG", "0;15")
+    asked = []
+    monkeypatch.setattr("sttop.terminal.query_osc11", lambda *a, **k: asked.append(1))
+    assert detect_theme("auto") == LIGHT
+    assert asked == []
+
+
+def test_theme_sources_reports_every_source(monkeypatch):
+    from sttop.terminal import theme_sources
+
+    monkeypatch.setenv("COLORFGBG", "0;15")
+    monkeypatch.setattr("sttop.terminal.query_osc11", lambda *a, **k: DARK)
+    assert list(theme_sources()) == [("COLORFGBG", LIGHT), ("OSC 11", DARK)]
