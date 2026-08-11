@@ -1,5 +1,9 @@
 # sttop
 
+[![PyPI](https://img.shields.io/pypi/v/sttop)](https://pypi.org/project/sttop/)
+[![Python](https://img.shields.io/pypi/pyversions/sttop)](https://pypi.org/project/sttop/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](#license)
+
 Live speech-to-text monitor for the terminal — `htop`, but for what is being said.
 
 Taps your **microphone** and your **system audio output** as two independent streams,
@@ -7,16 +11,7 @@ transcribes both in real time, labels who is speaking, and appends every line to
 Markdown file as it happens. Fully local: no network, no API keys, nothing leaves
 the machine.
 
-```
- sttop  ● rec 04:12   mic ███·······  sys ██████····   parakeet-tdt/cpu onnx · ecapa @0.50 · queue 0 · 37 lines · 3 voices
- writing → ~/.local/share/sttop/sessions/2026-08-10-1432-standup.md
-
- 03:58  you    so the migration lands friday?
- 04:02  spk1   friday is tight, monday is safer
- 04:09  spk2   +1 on monday
-
- q quit   space pause   r rename speaker
-```
+![sttop recording a standup](https://raw.githubusercontent.com/v4rgas/sttop/main/docs/sttop.svg)
 
 ## Why two streams
 
@@ -63,7 +58,13 @@ uv run sttop config                # write ~/.config/sttop/config.toml
 uv run sttop theme                 # show the detected terminal colour scheme
 ```
 
-Keys: `q` quit · `space` pause · `r` rename a speaker (`spk1=Ana`, rewrites past lines too).
+Keys: `q` quit · `space` pause · `r` rename a speaker.
+
+A rename is retroactive — `spk1=Ana` relabels the live view *and* rewrites every
+line already written to the Markdown file, so you can name people once you
+recognise them rather than before you start.
+
+![renaming a speaker mid-session](https://raw.githubusercontent.com/v4rgas/sttop/main/docs/rename.svg)
 
 ## Output
 
@@ -179,6 +180,10 @@ answers, it assumes dark. Run `sttop theme` to see what was detected.
 Set `ui.theme` to any Textual theme name (`gruvbox`, `nord`, `catppuccin-mocha`,
 `solarized-light`, …) to override the terminal-following behaviour.
 
+![gruvbox theme](https://raw.githubusercontent.com/v4rgas/sttop/main/docs/theme-gruvbox.svg)
+
+![solarized-light theme](https://raw.githubusercontent.com/v4rgas/sttop/main/docs/theme-solarized-light.svg)
+
 ## Tests
 
 ```bash
@@ -192,6 +197,17 @@ hardware and downloads a model, so it is opt-in:
 ```bash
 STTOP_INTEGRATION=1 uv run --extra dev pytest
 ```
+
+## Screenshots
+
+The images above are rendered from the real widgets by
+
+```bash
+uv run --extra dev python scripts/screenshots.py
+```
+
+which drives `sttop.tui` with a scripted transcript instead of a live engine, so
+`docs/*.svg` cannot drift from the UI it documents.
 
 ## License
 
