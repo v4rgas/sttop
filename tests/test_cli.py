@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from sttop.__main__ import COMMANDS, build_parser, main, with_default_command
@@ -80,3 +82,59 @@ def test_writing_a_config_does_not_require_a_valid_one(tmp_path, capsys):
     path.write_text("vad = 3\n")
     assert main(["-c", str(path), "config"]) == 0
     assert "vad = 3" not in path.read_text()
+
+
+# -- native log capture -----------------------------------------------------
+
+
+class _RecordArgs:
+    """The record subcommand's arguments, all left at their defaults."""
+
+    mic = system = model = backend = language = title = None
+    no_diarize = save_wav = False
+
+
+def run_record(monkeypatch, tmp_path, app_run):
+    import sttop.tui
+    from sttop import __main__ as cli
+    from sttop.config import Config
+
+    class FakeApp:
+        def __init__(self, config, title):
+            pass
+
+        run = staticmethod(app_run)
+
+    monkeypatch.setattr(cli, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(sttop.tui, "SttopApp", FakeApp)
+    return cli.cmd_record(Config(), _RecordArgs())
+
+
+def test_native_noise_cannot_paint_over_the_ui(monkeypatch, tmp_path, capsys):
+    """onnxruntime warns about its CoreML provider while the model loads,
+    which is mid-session, straight to fd 2 - the terminal Textual is drawing
+    on. No redraw clears that, so fd 2 goes to a file for the run."""
+    transcript = tmp_path / "session.md"
+
+    def app_run():
+        os.write(2, b"W:onnxruntime coreml_execution_provider noise\n")
+        return transcript
+
+    assert run_record(monkeypatch, tmp_path, app_run) == 0
+
+    captured = capsys.readouterr()
+    assert "coreml_execution_provider" not in captured.err
+    assert str(transcript) in captured.out
+    assert "coreml_execution_provider" in (tmp_path / "session.log").read_text()
+
+
+def test_a_run_with_nothing_to_show_surfaces_the_log(monkeypatch, tmp_path, capsys):
+    """Having hidden fd 2, a native crash would otherwise leave no trace at
+    all - and this is the one moment anyone wants to see it."""
+
+    def app_run():
+        os.write(2, b"libc++abi: terminating\n")
+        return None
+
+    assert run_record(monkeypatch, tmp_path, app_run) == 0
+    assert "libc++abi: terminating" in capsys.readouterr().err

@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .config import CONFIG_PATH, Config, ConfigError, write_default_config
+from .config import CONFIG_PATH, DATA_DIR, Config, ConfigError, write_default_config
 from .stt import BACKENDS
 
 
@@ -220,9 +220,24 @@ def cmd_record(config: Config, args) -> int:
     if args.save_wav:
         config.audio.save_wav = True
 
-    path = SttopApp(config, args.title).run()
+    from .nativelog import quiet_onnxruntime, stderr_to, tail
+
+    quiet_onnxruntime()
+    log_path = DATA_DIR / "session.log"
+    # fd 2 belongs to the log for the length of the run: a native library
+    # writing to it mid-session paints over the UI, which is unreadable and
+    # cannot be redrawn away.
+    with stderr_to(log_path):
+        path = SttopApp(config, args.title).run()
+
     if path:
         print(f"transcript: {path}")
+    else:
+        # Nothing to show for the run: whatever went wrong is in the log, and
+        # this is the only time anyone would want to see it.
+        captured = tail(log_path)
+        if captured:
+            print(f"{captured}\n\n(full log: {log_path})", file=sys.stderr)
     return 0
 
 

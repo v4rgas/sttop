@@ -16,6 +16,12 @@ class ParakeetTranscriber:
     def __init__(self, config: SttConfig) -> None:
         import onnx_asr
 
+        from ..nativelog import quiet_onnxruntime
+
+        # onnxruntime warns about every operator its CoreML provider cannot
+        # take, straight to fd 2 - which is the terminal the UI is drawing on.
+        quiet_onnxruntime()
+
         self.config = config
         self._model = onnx_asr.load_model(config.model)
         short = config.model.removeprefix("nemo-").removesuffix("-0.6b-v3")
