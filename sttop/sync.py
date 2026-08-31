@@ -10,6 +10,7 @@ someone forgets to add an ignore rule.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -126,6 +127,46 @@ def sync_sessions(directory: Path, remote: str = "", cipher: Cipher | None = Non
         _git(directory, "pull", "-q", "--rebase", "origin", branch)
         _git(directory, "push", "-q", "-u", "origin", branch)
     return f"git: pushed to {remote}"
+
+
+def gh_ready() -> bool:
+    """Whether the GitHub CLI is installed and logged in - the two things
+    creating a repo on the user's behalf needs."""
+    if shutil.which("gh") is None:
+        return False
+    probe = subprocess.run(["gh", "auth", "status"], capture_output=True)
+    return probe.returncode == 0
+
+
+def create_github_repo(name: str) -> str:
+    """A fresh *private* repo via gh, returning the URL to push to.
+
+    The URL follows the user's configured git protocol, so whatever auth gh
+    already set up (ssh keys, or its https credential helper) keeps working.
+    """
+    made = subprocess.run(
+        ["gh", "repo", "create", name, "--private"], capture_output=True, text=True
+    )
+    if made.returncode != 0:
+        detail = (made.stderr or made.stdout).strip().splitlines()
+        raise SyncError(detail[-1] if detail else "gh repo create failed")
+
+    protocol = subprocess.run(
+        ["gh", "config", "get", "git_protocol"], capture_output=True, text=True
+    ).stdout.strip()
+    field = "sshUrl" if protocol == "ssh" else "url"
+    view = subprocess.run(
+        ["gh", "repo", "view", name, "--json", field, "-q", f".{field}"],
+        capture_output=True,
+        text=True,
+    )
+    url = view.stdout.strip()
+    if view.returncode != 0 or not url:
+        raise SyncError(
+            f"created {name} but could not read its URL - set storage.git_remote "
+            "from `gh repo view`"
+        )
+    return url if url.endswith(".git") else url + ".git"
 
 
 def _set_origin(directory: Path, remote: str) -> None:

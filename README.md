@@ -119,11 +119,15 @@ One command, once:
 uv run sttop sync
 ```
 
-The first run is the setup: it asks for a private repo to push to (make an
-empty one on GitHub first, or leave it blank for local-only history) and for a
-vault passphrase, remembers both, and pushes. Every run after that — including
-the automatic one after each recording — is the same command with nothing left
-to ask. To change the repo later, edit `storage.git_remote` in the config.
+The first run is the setup: it asks for a private repo to push to — leave it
+empty and, if the `gh` CLI is logged in, sttop offers to create one for you
+(`gh repo create <name> --private`); decline and history stays local-only. Then
+it asks for a vault passphrase — leave *that* empty and a strong random one is
+generated and kept in the sessions' `.env`, ready to copy to another machine.
+Both answers are remembered, the first push happens, and every run after that —
+including the automatic one after each recording — is the same command with
+nothing left to ask. To change the repo later, edit `storage.git_remote` in
+the config.
 
 After every session sttop commits to a git repo it manages inside the sessions
 directory and pushes. On your machine nothing changes: sessions stay plain

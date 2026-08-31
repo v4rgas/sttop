@@ -161,6 +161,82 @@ def _fail_if_prompted(prompt=""):
     raise AssertionError(f"prompted unexpectedly: {prompt!r}")
 
 
+def test_an_empty_passphrase_generates_one(tmp_path, monkeypatch):
+    """Enter on the passphrase prompt is a valid answer: sttop invents a
+    strong one and parks it in the .env, where the user can copy it for
+    another machine."""
+    import sys as _sys
+
+    from sttop.crypto import open_vault
+
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    (sessions / "2026-01-01-0900-standup.md").write_text("# standup\n")
+    config = tmp_path / "c.toml"
+    config.write_text(f'sessions_dir = "{sessions}"\n')
+
+    monkeypatch.delenv("STTOP_PASSPHRASE", raising=False)
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")  # no remote
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": "")  # generate
+    monkeypatch.setattr("sttop.sync.gh_ready", lambda: False)  # no gh detour
+    assert main(["-c", str(config), "sync"]) == 0
+
+    generated = {
+        name: value
+        for name, _, value in (
+            line.partition("=")
+            for line in (sessions / ".env").read_text().splitlines()
+        )
+    }
+    assert len(generated["STTOP_PASSPHRASE"]) >= 24
+    open_vault(sessions, generated["STTOP_PASSPHRASE"])  # it opens the vault
+
+
+def test_setup_offers_to_create_the_repo_with_gh(tmp_path, monkeypatch):
+    """An empty remote answer plus gh on the machine turns into `gh repo
+    create` - the fake gh below stands in for the real one, materialising
+    'meetings' as a local bare repo the sync then pushes to."""
+    import subprocess
+    import sys as _sys
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    gh = fake_bin / "gh"
+    gh.write_text(
+        "#!/bin/sh\n"
+        "case \"$1 $2\" in\n"
+        '  "auth status") exit 0 ;;\n'
+        '  "config get") echo ssh ;;\n'
+        '  "repo create") git init -q --bare "$GH_FAKE_DIR/$3.git" ;;\n'
+        '  "repo view") echo "$GH_FAKE_DIR/$3.git" ;;\n'
+        "esac\n"
+    )
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+    monkeypatch.setenv("GH_FAKE_DIR", str(tmp_path))
+
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    (sessions / "2026-01-01-0900-standup.md").write_text("# standup\n")
+    config = tmp_path / "c.toml"
+    config.write_text(f'sessions_dir = "{sessions}"\n')
+
+    answers = iter(["", "meetings"])  # no remote; yes, name it "meetings"
+    monkeypatch.setenv("STTOP_PASSPHRASE", "pw")
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    assert main(["-c", str(config), "sync"]) == 0
+
+    created = tmp_path / "meetings.git"
+    assert f'git_remote = "{created}"' in config.read_text()
+    cloud = subprocess.run(
+        ["git", "-C", str(created), "ls-tree", "-r", "--name-only", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert "standup.md.enc" in cloud
+
+
 def test_sync_mode_seals_and_remembers_the_key(tmp_path, capsys, monkeypatch):
     """The default mode's contract: the passphrase is typed once ever (here:
     supplied once), after which recording, reading and syncing never ask."""

@@ -125,6 +125,22 @@ def test_save_key_keeps_other_env_variables(tmp_path):
     assert sum(line.startswith("STTOP_KEY=") for line in lines) == 1
 
 
+def test_a_generated_passphrase_lives_beside_the_key(tmp_path):
+    """Nobody ever typed it, so the .env is its only home - and STTOP_KEY
+    must survive it moving in."""
+    from sttop.crypto import load_key, save_key, save_passphrase
+
+    cipher = open_vault(tmp_path, "generated-pw")
+    save_key(tmp_path, cipher)
+    save_passphrase(tmp_path, "generated-pw")
+
+    lines = (tmp_path / ".env").read_text().splitlines()
+    assert "STTOP_PASSPHRASE=generated-pw" in lines
+    assert load_key(tmp_path) is not None
+    # and the stored passphrase really opens the vault
+    open_vault(tmp_path, "generated-pw")
+
+
 def test_a_key_from_another_vault_is_not_trusted(tmp_path):
     """load_key answers None for every bad state - missing, corrupt, or a key
     that does not open *this* vault - because the fallback is always the same:

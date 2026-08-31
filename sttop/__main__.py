@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -247,8 +248,12 @@ def _passphrase(prompt: str = "vault passphrase: ") -> str:
     return os.environ.get("STTOP_PASSPHRASE") or getpass.getpass(prompt)
 
 
-def _unlock(config: Config):
+def _unlock(config: Config, generate: bool = False):
     """The sessions vault's cipher, creating the vault on first use.
+
+    With `generate` (the sync-mode setup), an empty answer means "make one for
+    me": a random passphrase, kept in the sessions' .env - the only place it
+    exists, and where another machine copies it from.
 
     Never runs while Textual holds the terminal: getpass needs the tty to
     itself, and a wrong passphrase should cost one line, not a TUI teardown.
@@ -266,10 +271,21 @@ def _unlock(config: Config):
             "sessions. Reading them on any other machine needs it, and a lost\n"
             "passphrase is unrecoverable."
         )
-        passphrase = getpass.getpass("new vault passphrase: ")
-        if getpass.getpass("repeat: ") != passphrase:
-            raise crypto.VaultError("passphrases do not match")
-        if not passphrase:
+        hint = " (empty = generate one)" if generate else ""
+        passphrase = getpass.getpass(f"new vault passphrase{hint}: ")
+        if passphrase:
+            if getpass.getpass("repeat: ") != passphrase:
+                raise crypto.VaultError("passphrases do not match")
+        elif generate:
+            passphrase = secrets.token_urlsafe(24)
+            cipher = crypto.open_vault(directory, passphrase)
+            saved = crypto.save_passphrase(directory, passphrase)
+            print(
+                f"generated one and saved it to {saved} ({crypto.PASS_VAR}) -\n"
+                "copy it somewhere safe; other machines need it to read your sessions"
+            )
+            return cipher
+        else:
             raise crypto.VaultError("an empty passphrase protects nothing")
     return crypto.open_vault(directory, passphrase)
 
@@ -283,7 +299,7 @@ def _vault_cipher(config: Config):
     directory = Path(config.sessions_dir)
     cipher = crypto.load_key(directory)
     if cipher is None:
-        cipher = _unlock(config)
+        cipher = _unlock(config, generate=True)
         crypto.save_key(directory, cipher)
     return cipher
 
@@ -352,6 +368,33 @@ def _sync(config: Config) -> str:
     )
 
 
+def _offer_repo_creation() -> str:
+    """No remote given: offer to make one with gh, the tool that already
+    knows who the user is. Declining - or not having gh - keeps history
+    local, which a later config edit can always upgrade."""
+    from .sync import SyncError, create_github_repo, gh_ready
+
+    if not gh_ready():
+        print(
+            "(no GitHub CLI logged in - keeping history local-only; set\n"
+            "storage.git_remote in the config to push later)"
+        )
+        return ""
+    name = input(
+        "create a private GitHub repo for it with gh? repo name\n"
+        "(empty = no, keep history local-only): "
+    ).strip()
+    if not name:
+        return ""
+    try:
+        remote = create_github_repo(name)
+    except SyncError as exc:
+        print(f"warn: {exc} - keeping history local-only", file=sys.stderr)
+        return ""
+    print(f"created {remote}")
+    return remote
+
+
 def cmd_sync(config: Config, config_path: Path | None) -> int:
     """One flow: the first run *is* the setup.
 
@@ -377,8 +420,10 @@ def cmd_sync(config: Config, config_path: Path | None) -> int:
         )
         remote = input(
             "private git remote to push to (e.g. git@github.com:you/meetings.git),\n"
-            "or leave empty for local-only history: "
+            "or leave empty: "
         ).strip()
+        if not remote:
+            remote = _offer_repo_creation()
         config.storage.git_remote = remote
         config.storage.git_sync = True
 

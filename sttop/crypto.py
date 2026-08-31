@@ -42,6 +42,9 @@ VAULT_NAME = ".sttop-vault"
 #: The remembered key, in the sessions directory and NEVER in the repo.
 KEY_FILE = ".env"
 KEY_VAR = "STTOP_KEY"
+#: A generated passphrase is kept here too - it exists nowhere else, and the
+#: user needs to copy it to read the sessions on another machine.
+PASS_VAR = "STTOP_PASSPHRASE"
 
 _CHECK = "sttop vault check"
 #: scrypt cost: ~32 MiB and well under a second on anything that can also run
@@ -140,27 +143,39 @@ def is_encrypted(path: Path) -> bool:
     return path.name.endswith(ENCRYPTED_SUFFIX)
 
 
-def save_key(directory: Path, cipher: Cipher) -> Path:
-    """Remember the derived key in <sessions>/.env, owner-readable only.
+def _set_env_var(path: Path, name: str, value: str) -> None:
+    """Set one variable in a dotenv file, owner-readable only.
 
-    Written as a dotenv line so scripts and the skill can source it too. Any
+    Written as dotenv lines so scripts and the skill can source them too. Any
     other variables someone keeps in the file survive the rewrite.
     """
-    path = directory / KEY_FILE
     kept = []
     if path.is_file():
         kept = [
             line
             for line in path.read_text(encoding="utf-8").splitlines()
-            if not line.startswith(f"{KEY_VAR}=")
+            if not line.startswith(f"{name}=")
         ]
-    salt64 = base64.b64encode(cipher.salt).decode()
-    key64 = base64.b64encode(cipher.key).decode()
-    body = "\n".join([*kept, f"{KEY_VAR}={salt64}.{key64}"]) + "\n"
-
+    body = "\n".join([*kept, f"{name}={value}"]) + "\n"
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as fh:
         fh.write(body)
+
+
+def save_key(directory: Path, cipher: Cipher) -> Path:
+    """Remember the derived key in <sessions>/.env."""
+    path = directory / KEY_FILE
+    salt64 = base64.b64encode(cipher.salt).decode()
+    key64 = base64.b64encode(cipher.key).decode()
+    _set_env_var(path, KEY_VAR, f"{salt64}.{key64}")
+    return path
+
+
+def save_passphrase(directory: Path, passphrase: str) -> Path:
+    """Keep a *generated* passphrase in <sessions>/.env - the user never saw
+    it typed, so this file is the only place it exists to be copied from."""
+    path = directory / KEY_FILE
+    _set_env_var(path, PASS_VAR, passphrase)
     return path
 
 
