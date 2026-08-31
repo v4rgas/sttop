@@ -131,6 +131,39 @@ def test_sync_with_a_cipher_ships_the_twin_not_the_plaintext(tmp_path):
     assert "2026-08-31-1000-standup.md" not in tracked
 
 
+def test_a_github_https_remote_is_wired_to_gh_credentials(sessions, monkeypatch):
+    """gh hands out https remotes; plain git would interrogate the user for a
+    username and a dead password. The repo-local helper hands the job to gh."""
+    import shutil as _shutil
+
+    from sttop.sync import _ensure_gh_credentials
+
+    sync_sessions(sessions)  # materialise the repo
+    monkeypatch.setattr(_shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+    _ensure_gh_credentials(sessions, "https://github.com/you/meetings.git")
+    helper = git(sessions, "config", "--local", "credential.helper")
+    assert helper == "!gh auth git-credential"
+
+    _ensure_gh_credentials(sessions, "https://github.com/you/meetings.git")
+    probe = subprocess.run(
+        ["git", "-C", str(sessions), "config", "--get-all", "credential.helper"],
+        capture_output=True, text=True,
+    )
+    assert len(probe.stdout.splitlines()) == 1  # idempotent, not accumulating
+
+
+def test_an_ssh_remote_leaves_credentials_alone(sessions):
+    from sttop.sync import _ensure_gh_credentials
+
+    sync_sessions(sessions)
+    _ensure_gh_credentials(sessions, "git@github.com:you/meetings.git")
+    probe = subprocess.run(
+        ["git", "-C", str(sessions), "config", "--local", "credential.helper"],
+        capture_output=True, text=True,
+    )
+    assert probe.returncode != 0  # nothing set
+
+
 def test_an_empty_directory_bootstraps_only_the_whitelist(tmp_path):
     directory = tmp_path / "sessions"
     sync_sessions(directory)

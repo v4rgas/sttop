@@ -266,13 +266,10 @@ def _unlock(config: Config, generate: bool = False):
 
     passphrase = os.environ.get("STTOP_PASSPHRASE")
     if not passphrase:
-        print(
-            "First-time vault setup: choose a passphrase for your encrypted\n"
-            "sessions. Reading them on any other machine needs it, and a lost\n"
-            "passphrase is unrecoverable."
-        )
+        print("\npick a vault passphrase - reading sessions elsewhere needs it,")
+        print("and a lost passphrase is unrecoverable")
         hint = " (empty = generate one)" if generate else ""
-        passphrase = getpass.getpass(f"new vault passphrase{hint}: ")
+        passphrase = getpass.getpass(f"vault passphrase{hint}: ")
         if passphrase:
             if getpass.getpass("repeat: ") != passphrase:
                 raise crypto.VaultError("passphrases do not match")
@@ -280,14 +277,18 @@ def _unlock(config: Config, generate: bool = False):
             passphrase = secrets.token_urlsafe(24)
             cipher = crypto.open_vault(directory, passphrase)
             saved = crypto.save_passphrase(directory, passphrase)
-            print(
-                f"generated one and saved it to {saved} ({crypto.PASS_VAR}) -\n"
-                "copy it somewhere safe; other machines need it to read your sessions"
-            )
+            print(f"  generated one → {_tilde(saved)}")
             return cipher
         else:
             raise crypto.VaultError("an empty passphrase protects nothing")
     return crypto.open_vault(directory, passphrase)
+
+
+def _tilde(path: Path) -> str:
+    """~-shortened for display: full paths make one-line messages unreadable."""
+    text = str(path)
+    home = str(Path.home())
+    return "~" + text[len(home):] if text.startswith(home + "/") else text
 
 
 def _vault_cipher(config: Config):
@@ -368,33 +369,6 @@ def _sync(config: Config) -> str:
     )
 
 
-def _offer_repo_creation() -> str:
-    """No remote given: offer to make one with gh, the tool that already
-    knows who the user is. Declining - or not having gh - keeps history
-    local, which a later config edit can always upgrade."""
-    from .sync import SyncError, create_github_repo, gh_ready
-
-    if not gh_ready():
-        print(
-            "(no GitHub CLI logged in - keeping history local-only; set\n"
-            "storage.git_remote in the config to push later)"
-        )
-        return ""
-    name = input(
-        "create a private GitHub repo for it with gh? repo name\n"
-        "(empty = no, keep history local-only): "
-    ).strip()
-    if not name:
-        return ""
-    try:
-        remote = create_github_repo(name)
-    except SyncError as exc:
-        print(f"warn: {exc} - keeping history local-only", file=sys.stderr)
-        return ""
-    print(f"created {remote}")
-    return remote
-
-
 def cmd_sync(config: Config, config_path: Path | None) -> int:
     """One flow: the first run *is* the setup.
 
@@ -414,16 +388,20 @@ def cmd_sync(config: Config, config_path: Path | None) -> int:
                 file=sys.stderr,
             )
             return 1
-        print(
-            "Setting up encrypted cloud sync. Sessions on this machine stay\n"
-            "plain Markdown; the repo only ever receives encrypted copies.\n"
-        )
-        remote = input(
-            "private git remote to push to (e.g. git@github.com:you/meetings.git),\n"
-            "or leave empty: "
-        ).strip()
-        if not remote:
-            remote = _offer_repo_creation()
+        from .sync import create_github_repo, gh_ready
+
+        print("encrypted cloud sync setup - the repo only ever sees ciphertext\n")
+        offer_gh = gh_ready()
+        hint = "create one with gh" if offer_gh else "keep history local-only"
+        remote = input(f"git remote to push to (empty = {hint}): ").strip()
+        if not remote and offer_gh:
+            name = input("new private repo name (empty = local-only): ").strip()
+            if name:
+                try:
+                    remote = create_github_repo(name)
+                    print(f"  created {remote}")
+                except SyncError as exc:
+                    print(f"warn: {exc} - keeping history local-only", file=sys.stderr)
         config.storage.git_remote = remote
         config.storage.git_sync = True
 
@@ -433,7 +411,10 @@ def cmd_sync(config: Config, config_path: Path | None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except SyncError as exc:
-        print(f"error: git sync failed: {exc}", file=sys.stderr)
+        message = str(exc)
+        if "could not read Username" in message:
+            message += " - run `gh auth setup-git`, or use an ssh remote"
+        print(f"error: git sync failed: {message}", file=sys.stderr)
         return 1
 
     if first_run:
@@ -442,7 +423,7 @@ def cmd_sync(config: Config, config_path: Path | None) -> int:
         path = config_path or CONFIG_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(config.to_toml())
-        print(f"saved to {path} - every session now syncs itself after recording")
+        print(f"config saved ({_tilde(path)}) - sessions now sync after recording")
     return 0
 
 

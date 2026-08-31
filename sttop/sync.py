@@ -10,6 +10,7 @@ someone forgets to add an ignore rule.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from datetime import datetime
@@ -31,8 +32,14 @@ GITIGNORE = f"""# managed by sttop - only encrypted sessions belong in this repo
 
 
 def _git(directory: Path, *args: str) -> str:
+    # Prompts disabled: an auth problem must become an error line and a
+    # retry hint, not a surprise interrogation mid-flow (or a hang when the
+    # sync runs right after a recording).
     result = subprocess.run(
-        ["git", "-C", str(directory), *args], capture_output=True, text=True
+        ["git", "-C", str(directory), *args],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip().splitlines()
@@ -117,6 +124,7 @@ def sync_sessions(directory: Path, remote: str = "", cipher: Cipher | None = Non
         )
 
     _set_origin(directory, remote)
+    _ensure_gh_credentials(directory, remote)
     branch = _git(directory, "rev-parse", "--abbrev-ref", "HEAD")
     try:
         _git(directory, "push", "-q", "-u", "origin", branch)
@@ -139,18 +147,24 @@ def gh_ready() -> bool:
 
 
 def create_github_repo(name: str) -> str:
-    """A fresh *private* repo via gh, returning the URL to push to.
+    """A *private* repo via gh, returning the URL to push to.
 
     The URL follows the user's configured git protocol, so whatever auth gh
-    already set up (ssh keys, or its https credential helper) keeps working.
+    already set up keeps working. If the repo already exists - an earlier
+    setup attempt that failed later on - it is simply reused: the URL is the
+    answer either way.
     """
     made = subprocess.run(
         ["gh", "repo", "create", name, "--private"], capture_output=True, text=True
     )
-    if made.returncode != 0:
+    url = _repo_url(name)
+    if url is None:
         detail = (made.stderr or made.stdout).strip().splitlines()
-        raise SyncError(detail[-1] if detail else "gh repo create failed")
+        raise SyncError(detail[-1] if detail else f"gh could not create {name}")
+    return url
 
+
+def _repo_url(name: str) -> str | None:
     protocol = subprocess.run(
         ["gh", "config", "get", "git_protocol"], capture_output=True, text=True
     ).stdout.strip()
@@ -162,11 +176,27 @@ def create_github_repo(name: str) -> str:
     )
     url = view.stdout.strip()
     if view.returncode != 0 or not url:
-        raise SyncError(
-            f"created {name} but could not read its URL - set storage.git_remote "
-            "from `gh repo view`"
-        )
+        return None
     return url if url.endswith(".git") else url + ".git"
+
+
+def _ensure_gh_credentials(directory: Path, remote: str) -> None:
+    """Let gh answer the https credential prompt, repo-locally.
+
+    gh hands out https remotes, but plain git does not know to ask gh for
+    the token - without this, the first push interrogates the user for a
+    username and a password GitHub no longer even accepts. Local config
+    only: nothing outside this repo changes.
+    """
+    if not remote.startswith("https://github.com/") or shutil.which("gh") is None:
+        return
+    probe = subprocess.run(
+        ["git", "-C", str(directory), "config", "--local", "credential.helper"],
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0:  # nothing set for this repo yet
+        _git(directory, "config", "credential.helper", "!gh auth git-credential")
 
 
 def _set_origin(directory: Path, remote: str) -> None:
