@@ -71,11 +71,19 @@ uv run sttop --backend whisper -m small
 uv run sttop devices --test        # list audio sources, record 1s from each
 uv run sttop doctor                # check the audio deps, explain anything missing
 uv run sttop sessions              # list past transcripts
+uv run sttop read                  # open the latest transcript (decrypting it if needed)
+uv run sttop read standup          # ...or any session, by filename substring
+uv run sttop sync                  # encrypted cloud backup; first run sets everything up
 uv run sttop config                # write ~/.config/sttop/config.toml
 uv run sttop theme                 # show the detected terminal colour scheme
 ```
 
-Keys: `q` quit · `space` pause · `r` rename a speaker.
+Keys: `q` quit · `space` pause · `r` rename a speaker · `y` copy the transcript so far.
+
+`y` puts everything transcribed *up to this moment* on the clipboard — for pasting
+into notes or an assistant while the meeting is still going, without stopping the
+recording. It goes out as OSC 52, so it reaches your system clipboard even over
+ssh on terminals that support it.
 
 A rename is retroactive — `spk1=Ana` relabels the live view *and* rewrites every
 line already written to the Markdown file, so you can name people once you
@@ -102,6 +110,49 @@ line — kill it mid-meeting and the transcript so far is already on disk.
 
 - `04:02` **spk1** — friday is tight, monday is safer
 ```
+
+## Encrypted cloud sync
+
+One command, once:
+
+```bash
+uv run sttop sync
+```
+
+The first run is the setup: it asks for a private repo to push to (make an
+empty one on GitHub first, or leave it blank for local-only history) and for a
+vault passphrase, remembers both, and pushes. Every run after that — including
+the automatic one after each recording — is the same command with nothing left
+to ask. To change the repo later, edit `storage.git_remote` in the config.
+
+After every session sttop commits to a git repo it manages inside the sessions
+directory and pushes. On your machine nothing changes: sessions stay plain
+Markdown, `sttop read` and `grep` work as always, and no passphrase is ever
+asked while you work. What enters the repo is a sealed twin of each transcript
+(`*.md.enc` — the same Markdown, encrypted with AES-256-GCM under a
+scrypt-derived key), so reading the cloud copy takes `sttop read` plus the
+passphrase, not a browser.
+
+The passphrase is chosen once, at your first sync, and then remembered in a
+`.env` beside the sessions (owner-readable only) — typed once ever per machine.
+That is safe *because* the plaintext already lives on the same disk: the stored
+key protects the remote exactly as well, it just stops the prompting. The salt
+travels in `.sttop-vault`, which *is* committed — so a fresh clone on another
+machine carries everything decryption needs except the passphrase.
+
+The repo's `.gitignore` is a *whitelist* — everything is ignored except
+`*.md.enc` and `.sttop-vault` — so plaintext transcripts, WAVs, logs and the
+`.env` key can never enter history, even by accident, and sttop repairs the
+file if it drifts. If a push fails (offline, say), the commit is still local
+and `sttop sync` retries later; two machines pushing to one remote reconcile
+by rebase. **A lost passphrase makes the cloud copies unrecoverable** — the
+local plaintext is unaffected.
+
+If you want ciphertext *on disk* too — a stolen-laptop threat model — set
+`storage.encrypt = "always"`: sessions are then written as `*.md.enc` directly
+(still flushed per utterance, so a hard kill loses nothing), the passphrase is
+asked each run (`STTOP_PASSPHRASE` skips it), nothing is remembered in `.env`,
+and mid-meeting `y` is the way to plaintext.
 
 ## How it works
 
@@ -195,6 +246,11 @@ language = ""          # blank = autodetect
 
 [ui]
 theme = "auto"         # auto follows your terminal; or gruvbox, nord, ...
+
+[storage]
+encrypt = "sync"       # "sync": plaintext here, ciphertext in the repo; "always": ciphertext on disk too
+git_sync = false       # auto-commit sessions to a managed git repo
+git_remote = ""        # push there after each session; implies git_sync
 
 [diarize]
 enabled = true

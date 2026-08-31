@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import getpass
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -58,6 +61,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     command("doctor", "check audio deps and explain anything missing")
     command("sessions", "list recorded sessions")
+
+    read = command("read", "open a transcript, decrypting it if needed")
+    read.add_argument(
+        "session",
+        nargs="?",
+        help="session filename or a substring of one; default: the latest",
+    )
+
+    command(
+        "sync",
+        "push sessions to a private repo, encrypted; first run sets everything up",
+    )
     command("theme", "show the detected terminal colour scheme")
     command("config", "write a default config file")
 
@@ -224,6 +239,168 @@ def cmd_sessions(config: Config) -> int:
     return 0
 
 
+# -- vault -------------------------------------------------------------------
+
+
+def _passphrase(prompt: str = "vault passphrase: ") -> str:
+    """From STTOP_PASSPHRASE when set (scripts, the skill), the tty otherwise."""
+    return os.environ.get("STTOP_PASSPHRASE") or getpass.getpass(prompt)
+
+
+def _unlock(config: Config):
+    """The sessions vault's cipher, creating the vault on first use.
+
+    Never runs while Textual holds the terminal: getpass needs the tty to
+    itself, and a wrong passphrase should cost one line, not a TUI teardown.
+    """
+    from . import crypto
+
+    directory = Path(config.sessions_dir)
+    if crypto.vault_exists(directory):
+        return crypto.open_vault(directory, _passphrase())
+
+    passphrase = os.environ.get("STTOP_PASSPHRASE")
+    if not passphrase:
+        print(
+            "First-time vault setup: choose a passphrase for your encrypted\n"
+            "sessions. Reading them on any other machine needs it, and a lost\n"
+            "passphrase is unrecoverable."
+        )
+        passphrase = getpass.getpass("new vault passphrase: ")
+        if getpass.getpass("repeat: ") != passphrase:
+            raise crypto.VaultError("passphrases do not match")
+        if not passphrase:
+            raise crypto.VaultError("an empty passphrase protects nothing")
+    return crypto.open_vault(directory, passphrase)
+
+
+def _vault_cipher(config: Config):
+    """Sync mode's cipher: remembered in the sessions' .env, so the passphrase
+    is a one-time setup cost, not a per-sync toll. The .env can never enter
+    the repo - the whitelist .gitignore admits only ciphertext."""
+    from . import crypto
+
+    directory = Path(config.sessions_dir)
+    cipher = crypto.load_key(directory)
+    if cipher is None:
+        cipher = _unlock(config)
+        crypto.save_key(directory, cipher)
+    return cipher
+
+
+def cmd_read(config: Config, args) -> int:
+    from . import crypto
+    from .journal import list_sessions
+
+    directory = Path(config.sessions_dir)
+    if args.session and Path(args.session).is_file():
+        path = Path(args.session)
+    else:
+        paths = list_sessions(directory, limit=1000)
+        if args.session:
+            paths = [p for p in paths if args.session in p.name]
+        if not paths:
+            what = f"no session matching {args.session!r}" if args.session else (
+                "no sessions yet"
+            )
+            print(f"{what} in {directory}", file=sys.stderr)
+            return 1
+        path = paths[0]  # newest first, so a bare `sttop read` opens the latest
+
+    if crypto.is_encrypted(path):
+        # The remembered key first (sync mode: no prompt, ever); the
+        # passphrase only when there is no key or the file outgrew it.
+        cipher = crypto.load_key(directory)
+        if cipher is not None:
+            try:
+                text = crypto.decrypt_session(path, cipher)
+            except crypto.VaultError:
+                cipher = None
+        if cipher is None:
+            try:
+                text = crypto.decrypt_session(path, _passphrase())
+            except crypto.VaultError as exc:
+                print(f"error: {path.name}: {exc}", file=sys.stderr)
+                return 1
+    else:
+        text = path.read_text(encoding="utf-8")
+
+    _display(text)
+    return 0
+
+
+def _display(text: str) -> None:
+    """Through the pager on a tty, plain on a pipe - so `sttop read` both
+    *opens* a meeting interactively and feeds `grep` or an LLM cleanly."""
+    if sys.stdout.isatty():
+        pager = os.environ.get("PAGER", "less")
+        try:
+            subprocess.run([pager], input=text, text=True)
+            return
+        except OSError:
+            pass  # no pager on this machine; printing still works
+    print(text, end="")
+
+
+def _sync(config: Config) -> str:
+    from .sync import sync_sessions
+
+    # "always" already has ciphertext on disk; "sync" seals on the way out.
+    cipher = _vault_cipher(config) if config.storage.encrypt == "sync" else None
+    return sync_sessions(
+        Path(config.sessions_dir), config.storage.git_remote, cipher=cipher
+    )
+
+
+def cmd_sync(config: Config, config_path: Path | None) -> int:
+    """One flow: the first run *is* the setup.
+
+    Unconfigured and on a tty, it asks for the repo and the passphrase, saves
+    both, and pushes - after which this run and every later one are the same
+    command doing the same thing with nothing to answer.
+    """
+    from .crypto import VaultError
+    from .sync import SyncError
+
+    first_run = not (config.storage.git_sync or config.storage.git_remote)
+    if first_run:
+        if not sys.stdin.isatty():
+            print(
+                "git sync is not set up - run `sttop sync` in a terminal once,\n"
+                f"or set storage.git_remote in {config_path or CONFIG_PATH}",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            "Setting up encrypted cloud sync. Sessions on this machine stay\n"
+            "plain Markdown; the repo only ever receives encrypted copies.\n"
+        )
+        remote = input(
+            "private git remote to push to (e.g. git@github.com:you/meetings.git),\n"
+            "or leave empty for local-only history: "
+        ).strip()
+        config.storage.git_remote = remote
+        config.storage.git_sync = True
+
+    try:
+        print(_sync(config))  # first time, this also asks for the passphrase
+    except VaultError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except SyncError as exc:
+        print(f"error: git sync failed: {exc}", file=sys.stderr)
+        return 1
+
+    if first_run:
+        # Persisted only after the sync worked: a config that says sync is on
+        # should mean a sync has actually succeeded once.
+        path = config_path or CONFIG_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(config.to_toml())
+        print(f"saved to {path} - every session now syncs itself after recording")
+    return 0
+
+
 def cmd_record(config: Config, args) -> int:
     from .tui import SttopApp
 
@@ -244,6 +421,16 @@ def cmd_record(config: Config, args) -> int:
     if args.save_wav:
         config.audio.save_wav = True
 
+    cipher = None
+    if config.storage.encrypt == "always":
+        from .crypto import VaultError
+
+        try:
+            cipher = _unlock(config)
+        except VaultError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
     from .nativelog import quiet_onnxruntime, stderr_to, tail
 
     quiet_onnxruntime()
@@ -252,10 +439,11 @@ def cmd_record(config: Config, args) -> int:
     # writing to it mid-session paints over the UI, which is unreadable and
     # cannot be redrawn away.
     with stderr_to(log_path):
-        path = SttopApp(config, args.title).run()
+        path = SttopApp(config, args.title, cipher=cipher).run()
 
     if path:
         print(f"transcript: {path}")
+        _sync_after_record(config)
     else:
         # Nothing to show for the run: whatever went wrong is in the log, and
         # this is the only time anyone would want to see it.
@@ -265,8 +453,23 @@ def cmd_record(config: Config, args) -> int:
     return 0
 
 
+def _sync_after_record(config: Config) -> None:
+    """Best-effort: an unreachable remote must not eat the transcript line
+    above, so failure is a warning, and `sttop sync` retries it later."""
+    if not (config.storage.git_sync or config.storage.git_remote):
+        return
+    from .crypto import VaultError
+    from .sync import SyncError
+
+    try:
+        print(_sync(config))
+    except (SyncError, VaultError) as exc:
+        print(f"warn: git sync failed ({exc}) - run `sttop sync` to retry",
+              file=sys.stderr)
+
+
 COMMANDS = {
-    "record", "devices", "doctor", "sessions", "theme", "config",
+    "record", "devices", "doctor", "sessions", "read", "sync", "theme", "config",
 }
 
 
@@ -285,6 +488,13 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"error: bad config: {exc}", file=sys.stderr)
         return 1
+    if config.storage.encrypt not in ("sync", "always"):
+        print(
+            'error: bad config: storage.encrypt must be "sync" or "always", '
+            f"got {config.storage.encrypt!r}",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.command == "devices":
         return cmd_devices(config, args)
@@ -292,6 +502,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_doctor(config)
     if args.command == "sessions":
         return cmd_sessions(config)
+    if args.command == "read":
+        return cmd_read(config, args)
+    if args.command == "sync":
+        return cmd_sync(config, args.config)
     if args.command == "theme":
         return cmd_theme(config)
     return cmd_record(config, args)

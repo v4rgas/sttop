@@ -89,6 +89,57 @@ def test_list_sessions_on_a_missing_directory(tmp_path):
     assert list_sessions(tmp_path / "nope") == []
 
 
+def test_snapshot_is_the_file_so_far(tmp_path):
+    """What `y` copies mid-meeting must equal what is on disk, byte for byte -
+    otherwise the clipboard and the transcript disagree about the meeting."""
+    journal = Journal.create(tmp_path, "demo", backend="test")
+    journal.append(utterance("you", 0.0, "hello"))
+    journal.append(utterance("spk1", 1.0, "hi"))
+    assert journal.snapshot() == journal.path.read_text()
+    journal.rename_speaker("spk1", "Ana")
+    assert journal.snapshot() == journal.path.read_text()
+    journal.close(2.0)
+    assert journal.snapshot() == journal.path.read_text()
+
+
+def test_encrypted_journal_round_trips(tmp_path):
+    from sttop.crypto import Cipher, decrypt_session
+
+    cipher = Cipher(b"k" * 32, b"s" * 16)
+    journal = Journal.create(tmp_path, "demo", cipher=cipher)
+    journal.append(utterance("spk1", 0.0, "one"))
+    journal.append(utterance("spk1", 1.0, "two"))
+    assert journal.rename_speaker("spk1", "Ana") == 2
+    journal.append(utterance("Ana", 2.0, "three"))
+    path = journal.close(3.0)
+
+    assert path.name.endswith(".md.enc")
+    text = decrypt_session(path, cipher)
+    assert text == journal.snapshot()
+    assert text.count("**Ana**") == 3
+    assert "duration: 00:03" in text
+
+
+def test_list_sessions_sees_encrypted_and_plain_alike(tmp_path):
+    from sttop.crypto import Cipher
+
+    Journal.create(tmp_path, "plain").close(1.0)
+    Journal.create(tmp_path, "sealed", cipher=Cipher(b"k" * 32, b"s" * 16)).close(1.0)
+    names = [p.name for p in list_sessions(tmp_path)]
+    assert len(names) == 2
+    assert any(n.endswith(".md.enc") for n in names)
+
+
+def test_a_sealed_twin_is_the_same_session_and_plaintext_wins(tmp_path):
+    """Sync mode leaves a .md.enc beside every .md; listing both would show
+    each meeting twice, and `sttop read` would open the unreadable one."""
+    (tmp_path / "2026-01-01-0900-a.md").write_text("# a")
+    (tmp_path / "2026-01-01-0900-a.md.enc").write_text("sttop-enc/1 x\n")
+    (tmp_path / "2026-01-02-0900-b.md.enc").write_text("sttop-enc/1 x\n")  # clone-only
+    names = [p.name for p in list_sessions(tmp_path)]
+    assert names == ["2026-01-02-0900-b.md.enc", "2026-01-01-0900-a.md"]
+
+
 def test_rename_leaves_no_debris(tmp_path):
     """The rewrite goes via a temporary file so a kill mid-rename cannot
     truncate the session. Nothing of it may survive in the sessions dir."""

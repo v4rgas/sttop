@@ -27,6 +27,8 @@ dependencies = [
     "faster-whisper>=1.0.3",
     "webrtcvad-wheels>=2.0.14",
     "platformdirs>=4.0",
+    # storage.encrypt: scrypt + AES-GCM for the session vault.
+    "cryptography>=42",
     "onnx-asr[cpu,hub]>=0.12",
     # Fallback ffmpeg, fetched on first use only when the system has none, so
     # a fresh `uvx sttop` records instead of printing a package name.

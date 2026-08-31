@@ -111,12 +111,36 @@ class DiarizeConfig:
 
 
 @dataclass
+class StorageConfig:
+    #: "sync" (default): sessions are plain Markdown on this disk and sttop
+    #: works exactly as normal - but only sealed copies (scrypt + AES-256-GCM)
+    #: ever enter the git repo, so the cloud holds ciphertext. The passphrase
+    #: is chosen once, at your first sync, then remembered in a key file only
+    #: you can read - never typed again on this machine. "always": sessions
+    #: are ciphertext on disk too; the passphrase is asked every run
+    #: (STTOP_PASSPHRASE skips the prompt) and `sttop read` decrypts. Either
+    #: way a lost passphrase is unrecoverable - there is no reset.
+    encrypt: str = "sync"
+    #: Keep the sessions directory under a git repo sttop manages, committing
+    #: after every session. Only encrypted files ever enter the repo - the
+    #: .gitignore is a whitelist - so plaintext transcripts and audio stay
+    #: out of history even with this on.
+    git_sync: bool = False
+    #: Push that repo here after each commit, e.g. a private
+    #: "git@github.com:you/meetings.git". Implies git_sync. The remote holds
+    #: only ciphertext: your meetings live in the cloud, but reading them
+    #: takes sttop and the passphrase, not a browser.
+    git_remote: str = ""
+
+
+@dataclass
 class Config:
     audio: AudioConfig = field(default_factory=AudioConfig)
     vad: VadConfig = field(default_factory=VadConfig)
     stt: SttConfig = field(default_factory=SttConfig)
     diarize: DiarizeConfig = field(default_factory=DiarizeConfig)
     ui: UiConfig = field(default_factory=UiConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
     #: One Markdown file per session lands here.
     sessions_dir: str = str(DATA_DIR / "sessions")
     #: Where WAVs land when audio.save_wav is on.

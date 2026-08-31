@@ -82,6 +82,33 @@ def test_the_status_line_keeps_the_clock_at_any_width():
     assert all("01:01" in status_line(status, width) for width in (20, 46, 120))
 
 
+def test_yank_copies_the_transcript_so_far():
+    """`y` mid-meeting: the transcript so far lands on the clipboard, whole."""
+
+    async def scenario():
+        app = SttopApp(Config())
+        copied: list[str] = []
+        app.copy_to_clipboard = copied.append
+        app.engine.transcript = lambda: "# demo\n\n- `00:01` **you** — hola\n"
+        async with app.run_test() as pilot:
+            await pilot.press("y")
+        return copied
+
+    assert asyncio.run(scenario()) == ["# demo\n\n- `00:01` **you** — hola\n"]
+
+
+def test_yank_before_any_transcript_copies_nothing():
+    async def scenario():
+        app = SttopApp(Config())
+        copied: list[str] = []
+        app.copy_to_clipboard = copied.append
+        async with app.run_test() as pilot:  # no journal yet: transcript is ""
+            await pilot.press("y")
+        return copied
+
+    assert asyncio.run(scenario()) == []
+
+
 def test_a_long_session_path_gives_up_directories_not_the_filename(tmp_path):
     path = Path.home() / ".local/share/sttop/sessions/2026-08-11-1122-standup.md"
     assert shorten(path, 200).startswith("~/")

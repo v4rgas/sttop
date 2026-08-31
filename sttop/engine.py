@@ -83,8 +83,12 @@ class Engine:
         on_utterance: UtteranceCallback,
         on_error: ErrorCallback | None = None,
         on_rename: RenameCallback | None = None,
+        cipher=None,
     ) -> None:
         self.config = config
+        #: crypto.Cipher when storage.encrypt is on; the engine only carries
+        #: it to the journal, which does the sealing.
+        self._cipher = cipher
         self._on_utterance = on_utterance
         self._on_error = on_error or (lambda message: None)
         self._on_rename = on_rename or (lambda old, new, lines: None)
@@ -154,6 +158,7 @@ class Engine:
             mic_source=str(self.mic_source),
             sys_source=str(self.sys_source) if self.sys_source else "unavailable",
             backend=self.transcriber.describe,
+            cipher=self._cipher,
         )
         self._t0 = time.monotonic()
         self._running = True
@@ -260,6 +265,10 @@ class Engine:
 
     def rename_speaker(self, old: str, new: str) -> int:
         return self.journal.rename_speaker(old, new) if self.journal else 0
+
+    def transcript(self) -> str:
+        """The session so far as plaintext Markdown - live, mid-recording."""
+        return self.journal.snapshot() if self.journal else ""
 
     # -- status ------------------------------------------------------------
 

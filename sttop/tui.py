@@ -198,15 +198,18 @@ class SttopApp(App):
         Binding("q", "quit", "quit"),
         Binding("space", "pause", "pause"),
         Binding("r", "rename", "rename speaker"),
+        Binding("y", "yank", "copy transcript"),
         Binding("ctrl+c", "quit", show=False),
     ]
 
-    def __init__(self, config: Config, title: str | None = None) -> None:
+    def __init__(
+        self, config: Config, title: str | None = None, cipher=None
+    ) -> None:
         super().__init__()
         self.config = config
         self.session_title = title
         self.engine = Engine(
-            config, self._on_utterance, self._on_error, self._on_rename
+            config, self._on_utterance, self._on_error, self._on_rename, cipher=cipher
         )
         self.journal_path: Path | None = None
         # Resolved before Textual grabs the terminal - the OSC 11 query needs
@@ -286,6 +289,22 @@ class SttopApp(App):
             if paused
             else self._recording_message()
         )
+
+    def action_yank(self) -> None:
+        """The transcript so far, onto the clipboard, without stopping.
+
+        For pasting into notes or an assistant while the meeting is still
+        going - and the only way to get plaintext mid-session when the vault
+        is on. Goes out as OSC 52, so it reaches the system clipboard even
+        over ssh, on terminals that support it.
+        """
+        text = self.engine.transcript()
+        if not text:
+            self._banner("nothing to copy yet")
+            return
+        self.copy_to_clipboard(text)
+        lines = self.engine.status().utterances
+        self._banner(f"copied {lines} line(s) so far to clipboard")
 
     def action_rename(self) -> None:
         field = self.query_one("#rename", Input)
