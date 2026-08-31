@@ -3,7 +3,7 @@ import subprocess
 import pytest
 
 from sttop.crypto import Cipher, decrypt_session
-from sttop.sync import SyncError, seal_sessions, sync_sessions
+from sttop.sync import SyncError, pull_sessions, seal_sessions, sync_sessions
 
 
 def git(directory, *args) -> str:
@@ -66,11 +66,13 @@ def test_push_to_a_remote(sessions, tmp_path):
 
     message = sync_sessions(sessions, str(remote))
     assert "pushed" in message
-    assert "standup.md.enc" in git(remote, "ls-tree", "-r", "--name-only", "HEAD")
+    assert "standup.md.enc" in git(remote, "ls-tree", "-r", "--name-only", "main")
 
     # A second machine pushed meanwhile: sync rebases and still lands.
     other = tmp_path / "other"
-    subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True)
+    subprocess.run(
+        ["git", "clone", "-q", "-b", "main", str(remote), str(other)], check=True
+    )
     (other / "2026-08-31-1100-retro.md.enc").write_text("sttop-enc/1 x\nBBBB\n")
     git(other, "add", "-A")
     git(other, "-c", "user.name=o", "-c", "user.email=o@x", "commit", "-q", "-m", "x")
@@ -78,7 +80,7 @@ def test_push_to_a_remote(sessions, tmp_path):
 
     (sessions / "2026-08-31-1200-plan.md.enc").write_text("sttop-enc/1 x\nCCCC\n")
     assert "pushed" in sync_sessions(sessions, str(remote))
-    names = git(remote, "ls-tree", "-r", "--name-only", "HEAD")
+    names = git(remote, "ls-tree", "-r", "--name-only", "main")
     assert "retro.md.enc" in names and "plan.md.enc" in names
 
 
@@ -168,3 +170,100 @@ def test_an_empty_directory_bootstraps_only_the_whitelist(tmp_path):
     directory = tmp_path / "sessions"
     sync_sessions(directory)
     assert git(directory, "ls-files").splitlines() == [".gitignore"]
+
+
+# -- multiple machines --------------------------------------------------------
+
+
+def bare(tmp_path, name="cloud.git"):
+    remote = tmp_path / name
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    return str(remote)
+
+
+def machine(tmp_path, name, *files):
+    directory = tmp_path / name
+    directory.mkdir(exist_ok=True)
+    for filename, content in files:
+        (directory / filename).write_text(content)
+    return directory
+
+
+def test_pull_adopts_an_existing_repo_wholesale(tmp_path):
+    """The second-PC story: pulling into a fresh directory brings down the
+    sessions *and* the vault, before any local vault could be minted."""
+    remote = bare(tmp_path)
+    first = machine(
+        tmp_path, "pc1",
+        (".sttop-vault", "sttop-vault/1 c2FsdA==\n"),
+        ("2026-08-31-1000-standup.md.enc", "sttop-enc/1 x\nAAAA\n"),
+    )
+    sync_sessions(first, remote)
+
+    second = tmp_path / "pc2"
+    message = pull_sessions(second, remote)
+    assert "adopted 1 session" in message
+    assert (second / "2026-08-31-1000-standup.md.enc").is_file()
+    assert (second / ".sttop-vault").is_file()
+    assert "up to date" in pull_sessions(second, remote)
+
+
+def test_pull_on_an_empty_remote_is_a_shrug(tmp_path):
+    assert "remote is empty" in pull_sessions(tmp_path / "pc2", bare(tmp_path))
+
+
+def test_machines_taking_turns_converge(tmp_path):
+    """A records, B records, A records again - nobody pulls by hand, yet
+    every machine's sync leaves the remote holding everything."""
+    remote = bare(tmp_path)
+    a = machine(tmp_path, "a", ("s1.md.enc", "sttop-enc/1 x\nA1\n"))
+    sync_sessions(a, remote)
+
+    b = tmp_path / "b"
+    pull_sessions(b, remote)
+    (b / "s2.md.enc").write_text("sttop-enc/1 x\nB1\n")
+    sync_sessions(b, remote)
+
+    (a / "s3.md.enc").write_text("sttop-enc/1 x\nA2\n")
+    sync_sessions(a, remote)  # must integrate B's s2 before pushing s3
+    names = git(remote, "ls-tree", "-r", "--name-only", "main")
+    assert {"s1.md.enc", "s2.md.enc", "s3.md.enc"} <= set(names.splitlines())
+    assert (a / "s2.md.enc").is_file()  # and A now has B's session locally
+
+
+def test_a_conflicting_seal_goes_to_the_machine_with_the_plaintext(tmp_path):
+    """Both machines rewrote the same session (a rename on each side, say).
+    The one holding the plaintext .md is the authority - it can always
+    re-seal - so its version must win on the remote."""
+    remote = bare(tmp_path)
+    a = machine(tmp_path, "a", ("x.md.enc", "sttop-enc/1 x\nV1\n"))
+    sync_sessions(a, remote)
+    b = tmp_path / "b"
+    pull_sessions(b, remote)
+
+    (b / "x.md.enc").write_text("sttop-enc/1 x\nB-VERSION\n")
+    sync_sessions(b, remote)  # B pushes its rewrite first
+
+    (a / "x.md").write_text("# the plaintext, owned by A")
+    (a / "x.md.enc").write_text("sttop-enc/1 x\nA-VERSION\n")
+    sync_sessions(a, remote)  # conflict: A owns x.md, so A-VERSION wins
+
+    assert "A-VERSION" in git(remote, "show", "main:x.md.enc")
+    assert "A-VERSION" in (a / "x.md.enc").read_text()
+
+
+def test_a_conflicting_seal_without_the_plaintext_defers_to_the_remote(tmp_path):
+    remote = bare(tmp_path)
+    a = machine(tmp_path, "a", ("x.md.enc", "sttop-enc/1 x\nV1\n"))
+    sync_sessions(a, remote)
+    b = tmp_path / "b"
+    pull_sessions(b, remote)
+
+    (a / "x.md.enc").write_text("sttop-enc/1 x\nREMOTE-TRUTH\n")
+    sync_sessions(a, remote)
+
+    (b / "x.md.enc").write_text("sttop-enc/1 x\nLOCAL-GUESS\n")  # no x.md on B
+    sync_sessions(b, remote)
+
+    assert "REMOTE-TRUTH" in git(remote, "show", "main:x.md.enc")
+    assert "REMOTE-TRUTH" in (b / "x.md.enc").read_text()

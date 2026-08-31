@@ -152,6 +152,17 @@ and `sttop sync` retries later; two machines pushing to one remote reconcile
 by rebase. **A lost passphrase makes the cloud copies unrecoverable** — the
 local plaintext is unaffected.
 
+**Multiple machines** share one repo and one passphrase. On a new PC, run
+`sttop sync`, give it the same remote, and it *adopts* the existing repo —
+sessions and vault come down before anything local is created — then asks for
+the passphrase once and remembers it. From then on every machine converges on
+its own: opening sttop pulls other machines' sessions in the background while
+the model loads, quitting waits for any pull still in flight, and every sync
+integrates the remote before pushing. Histories that diverge are rebased
+automatically; if the same session was rewritten on two machines (a rename on
+each side, say), the machine holding its plaintext wins — it can always
+re-seal — and anything else defers to the remote.
+
 If you want ciphertext *on disk* too — a stolen-laptop threat model — set
 `storage.encrypt = "always"`: sessions are then written as `*.md.enc` directly
 (still flushed per utterance, so a hard kill loses nothing), the passphrase is

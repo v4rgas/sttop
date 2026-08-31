@@ -360,13 +360,19 @@ def _display(text: str) -> None:
 
 
 def _sync(config: Config) -> str:
-    from .sync import sync_sessions
+    from .sync import pull_sessions, sync_sessions
 
+    directory = Path(config.sessions_dir)
+    remote = config.storage.git_remote
+    if remote:
+        # Pull before the vault is even looked at: a second PC joining an
+        # existing repo must adopt the remote's vault, not mint its own.
+        pulled = pull_sessions(directory, remote)
+        if "session" in pulled:
+            print(pulled)
     # "always" already has ciphertext on disk; "sync" seals on the way out.
     cipher = _vault_cipher(config) if config.storage.encrypt == "sync" else None
-    return sync_sessions(
-        Path(config.sessions_dir), config.storage.git_remote, cipher=cipher
-    )
+    return sync_sessions(directory, remote, cipher=cipher)
 
 
 def cmd_sync(config: Config, config_path: Path | None) -> int:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from pathlib import Path
 
@@ -212,6 +213,7 @@ class SttopApp(App):
             config, self._on_utterance, self._on_error, self._on_rename, cipher=cipher
         )
         self.journal_path: Path | None = None
+        self._pull_worker = None
         # Resolved before Textual grabs the terminal - the OSC 11 query needs
         # raw mode and a tty that nobody else is reading.
         self._theme = detect_theme(config.ui.theme)
@@ -231,6 +233,11 @@ class SttopApp(App):
         self._banner("loading model…")
         # prepare() offloads the slow model load itself, so this stays on the loop.
         self.run_worker(self._boot(), exclusive=True)
+        if self.config.storage.git_remote:
+            # Other machines may have pushed sessions since last time; fetch
+            # them while the model loads. Its own group, or the exclusive
+            # boot worker would cancel it.
+            self._pull_worker = self.run_worker(self._pull_remote(), group="sync")
 
     async def _boot(self) -> None:
         try:
@@ -325,8 +332,33 @@ class SttopApp(App):
         changed = self.engine.rename_speaker(old, new)
         self._banner(f"renamed {old} → {new} in {changed} line(s)")
 
+    async def _pull_remote(self) -> None:
+        """Fetch what other machines pushed, while the model loads.
+
+        Failure here is a dim note, never a problem: recording does not need
+        the network, and the close-time sync retries the whole exchange.
+        """
+        from .sync import SyncError, pull_sessions
+
+        try:
+            message = await asyncio.to_thread(
+                pull_sessions,
+                Path(self.config.sessions_dir),
+                self.config.storage.git_remote,
+            )
+        except SyncError as exc:
+            self.query_one(TranscriptLog).note(f"— sync: {exc} (will retry on quit)")
+            return
+        if "session" in message:  # only news is worth a line in the transcript
+            self.query_one(TranscriptLog).note(f"— {message}")
+
     async def action_quit(self) -> None:
         # Awaiting the drain keeps the UI painting while the last few segments
         # finish transcribing, instead of freezing on the way out.
         self._banner("finishing transcription…")
+        if self._pull_worker is not None:
+            # A pull still in flight finishes first: quitting mid-rebase would
+            # leave the repo for the close-time sync to untangle.
+            with contextlib.suppress(Exception):
+                await self._pull_worker.wait()
         self.exit(await self.engine.stop())

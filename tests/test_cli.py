@@ -145,7 +145,7 @@ def test_first_sync_is_the_setup(tmp_path, capsys, monkeypatch):
     assert str(remote) in config.read_text()  # the answer was persisted
     assert (sessions / ".env").is_file()  # and so was the key
     cloud = subprocess.run(
-        ["git", "-C", str(remote), "ls-tree", "-r", "--name-only", "HEAD"],
+        ["git", "-C", str(remote), "ls-tree", "-r", "--name-only", "main"],
         capture_output=True, text=True, check=True,
     ).stdout
     assert "standup.md.enc" in cloud and "standup.md\n" not in cloud
@@ -193,6 +193,38 @@ def test_an_empty_passphrase_generates_one(tmp_path, monkeypatch):
     open_vault(sessions, generated["STTOP_PASSPHRASE"])  # it opens the vault
 
 
+def test_a_second_machine_joins_by_running_sync(tmp_path, monkeypatch, capsys):
+    """PC2 needs only the remote and the passphrase: `sttop sync` adopts the
+    repo (vault included), unlocks against the *existing* vault, and never
+    mints a second one."""
+    import subprocess
+
+    from sttop.crypto import open_vault
+
+    remote = tmp_path / "cloud.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    monkeypatch.setenv("STTOP_PASSPHRASE", "pw")
+
+    pc1 = tmp_path / "pc1"
+    pc1.mkdir()
+    (pc1 / "2026-01-01-0900-standup.md").write_text("# standup\nhola\n")
+    cfg1 = tmp_path / "c1.toml"
+    cfg1.write_text(f'sessions_dir = "{pc1}"\n[storage]\ngit_remote = "{remote}"\n')
+    assert main(["-c", str(cfg1), "sync"]) == 0
+
+    pc2 = tmp_path / "pc2"
+    cfg2 = tmp_path / "c2.toml"
+    cfg2.write_text(f'sessions_dir = "{pc2}"\n[storage]\ngit_remote = "{remote}"\n')
+    assert main(["-c", str(cfg2), "sync"]) == 0
+    assert "adopted 1 session" in capsys.readouterr().out
+
+    salt1 = open_vault(pc1, "pw").salt
+    assert open_vault(pc2, "pw").salt == salt1  # one vault, not two
+    assert (pc2 / ".env").is_file()  # key remembered on pc2 as well
+    assert main(["-c", str(cfg2), "read"]) == 0
+    assert "hola" in capsys.readouterr().out
+
+
 def test_setup_offers_to_create_the_repo_with_gh(tmp_path, monkeypatch):
     """An empty remote answer plus gh on the machine turns into `gh repo
     create` - the fake gh below stands in for the real one, materialising
@@ -231,7 +263,7 @@ def test_setup_offers_to_create_the_repo_with_gh(tmp_path, monkeypatch):
     created = tmp_path / "meetings.git"
     assert f'git_remote = "{created}"' in config.read_text()
     cloud = subprocess.run(
-        ["git", "-C", str(created), "ls-tree", "-r", "--name-only", "HEAD"],
+        ["git", "-C", str(created), "ls-tree", "-r", "--name-only", "main"],
         capture_output=True, text=True, check=True,
     ).stdout
     assert "standup.md.enc" in cloud

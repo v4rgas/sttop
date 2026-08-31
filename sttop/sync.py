@@ -10,6 +10,7 @@ someone forgets to add an ignore rule.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -85,24 +86,155 @@ def seal_sessions(directory: Path, cipher: Cipher) -> int:
     return sealed
 
 
-def sync_sessions(directory: Path, remote: str = "", cipher: Cipher | None = None) -> str:
-    """Commit whatever is new; push when a remote is given. Returns a one-line
-    summary for the terminal. Raises SyncError with git's own words otherwise.
-
-    With a cipher, plaintext sessions are sealed first ("sync" mode); without
-    one, whatever encrypted files already exist are synced ("always" mode).
-    """
-    directory.mkdir(parents=True, exist_ok=True)
-    if cipher is not None:
-        seal_sessions(directory, cipher)
+def _init_repo(directory: Path) -> None:
     if not (directory / ".git").is_dir():
-        _git(directory, "init", "-q")
+        try:
+            _git(directory, "init", "-q", "-b", "main")
+        except SyncError:  # git too old for -b; the branch name then hardly matters
+            _git(directory, "init", "-q")
 
-    # Rewritten, not appended: the whitelist *is* the security boundary, and
-    # an old copy that has drifted from GITIGNORE would silently widen it.
+
+def _ensure_whitelist(directory: Path) -> None:
+    """Rewritten, not appended: the whitelist *is* the security boundary, and
+    an old copy that has drifted from GITIGNORE would silently widen it."""
     gitignore = directory / ".gitignore"
     if not gitignore.is_file() or gitignore.read_text() != GITIGNORE:
         gitignore.write_text(GITIGNORE)
+
+
+def _has_commits(directory: Path) -> bool:
+    probe = subprocess.run(
+        ["git", "-C", str(directory), "rev-parse", "--verify", "-q", "HEAD"],
+        capture_output=True,
+    )
+    return probe.returncode == 0
+
+
+def _remote_branch(directory: Path) -> str | None:
+    """The remote's branch to share, or None for an empty remote.
+
+    HEAD's symref when it points at a real branch - but a bare repo whose
+    HEAD names a branch nobody ever pushed (init said master, sttop pushed
+    main) must not read as empty, so the actual heads have the final say.
+    """
+    head, heads = None, []
+    for line in _git(directory, "ls-remote", "--symref", "origin").splitlines():
+        if line.startswith("ref: refs/heads/"):
+            head = line.split()[1].removeprefix("refs/heads/")
+            continue
+        _, _, name = line.partition("\t")
+        if name.startswith("refs/heads/"):
+            heads.append(name.removeprefix("refs/heads/"))
+    if head in heads:
+        return head
+    for preferred in ("main", "master", *heads):
+        if preferred in heads:
+            return preferred
+    return None
+
+
+def _align_branch(directory: Path, remote_branch: str) -> str:
+    """Rename the local branch to the remote's, so two machines whose git
+    defaults disagree (main vs master) still share one history."""
+    local = _git(directory, "symbolic-ref", "--short", "HEAD")
+    if local != remote_branch:
+        _git(directory, "branch", "-m", local, remote_branch)
+    return remote_branch
+
+
+def _resolve(directory: Path, name: str) -> None:
+    """One conflicted path, decided without a human.
+
+    During a rebase, --theirs is the local commit being replayed and --ours
+    the remote history underneath it. A session whose plaintext lives on this
+    machine is this machine's to state - it can always re-seal it - so the
+    local seal wins; anything else, the remote knows better.
+    """
+    owned = name.endswith(ENCRYPTED_SUFFIX) and (
+        directory / name.removesuffix(".enc")
+    ).is_file()
+    side = "--theirs" if owned else "--ours"
+    with contextlib.suppress(SyncError):
+        # An add/delete conflict has only one side to check out; when that
+        # fails, whatever is in the worktree stands.
+        _git(directory, "checkout", side, "--", name)
+
+
+def _rebase_onto(directory: Path, branch: str) -> None:
+    """Rebase local commits onto origin/<branch>, resolving every conflict by
+    policy. Aborts cleanly rather than leaving a half-done rebase behind."""
+    arguments = ["rebase", f"origin/{branch}"]
+    for _ in range(100):  # one iteration per conflicted commit, bounded
+        try:
+            _git(directory, *_identity(directory), "-c", "core.editor=true", *arguments)
+            return
+        except SyncError as failure:
+            conflicted = _git(
+                directory, "diff", "--name-only", "--diff-filter=U"
+            ).splitlines()
+            if not conflicted:  # not a conflict stop: bail out with a clean tree
+                subprocess.run(
+                    ["git", "-C", str(directory), "rebase", "--abort"],
+                    capture_output=True,
+                )
+                raise SyncError(f"could not reconcile histories: {failure}") from None
+            for name in conflicted:
+                _resolve(directory, name)
+            _git(directory, "add", "-A")
+            arguments = ["rebase", "--continue"]
+    subprocess.run(
+        ["git", "-C", str(directory), "rebase", "--abort"], capture_output=True
+    )
+    raise SyncError("gave up reconciling histories - run `sttop sync` again")
+
+
+def pull_sessions(directory: Path, remote: str) -> str:
+    """Bring other machines' sessions down, before anything else happens.
+
+    Safe on a machine that has never synced: it adopts the remote's history
+    wholesale - vault included, which is what makes joining an existing repo
+    from a second PC work, and why this must run *before* a vault could be
+    created locally.
+    """
+    if not remote:
+        return "git: no remote configured"
+    directory.mkdir(parents=True, exist_ok=True)
+    _init_repo(directory)
+    _set_origin(directory, remote)
+    _ensure_gh_credentials(directory, remote)
+    _git(directory, "fetch", "-q", "origin")
+    branch = _remote_branch(directory)
+    if branch is None:
+        return "git: remote is empty"
+
+    before = {p.name for p in directory.glob(f"*{ENCRYPTED_SUFFIX}")}
+    if _has_commits(directory):
+        _rebase_onto(directory, _align_branch(directory, branch))
+        verb = "pulled"
+    else:
+        _git(directory, "checkout", "-q", "-B", branch, f"origin/{branch}")
+        verb = "adopted"
+    new = {p.name for p in directory.glob(f"*{ENCRYPTED_SUFFIX}")} - before
+    return f"git: {verb} {len(new)} session(s) from the remote" if new else (
+        "git: up to date"
+    )
+
+
+def sync_sessions(directory: Path, remote: str = "", cipher: Cipher | None = None) -> str:
+    """Seal, commit, reconcile with the remote, push. Returns a one-line
+    summary for the terminal; raises SyncError with git's own words otherwise.
+
+    With a cipher, plaintext sessions are sealed first ("sync" mode); without
+    one, whatever encrypted files already exist are synced ("always" mode).
+    The remote is always integrated before pushing, so machines can take
+    turns freely; conflicting seals of one session resolve to the machine
+    that owns its plaintext.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    _init_repo(directory)
+    _ensure_whitelist(directory)
+    if cipher is not None:
+        seal_sessions(directory, cipher)
 
     _git(directory, "add", "-A")
     committed = False
@@ -111,9 +243,7 @@ def sync_sessions(directory: Path, remote: str = "", cipher: Cipher | None = Non
         _git(directory, *_identity(directory), "commit", "-q", "-m", message)
         committed = True
 
-    try:  # a repo with no commits yet has nothing to push and no branch name
-        _git(directory, "rev-parse", "--verify", "-q", "HEAD")
-    except SyncError:
+    if not _has_commits(directory):
         return "git: nothing to commit yet (no encrypted sessions)"
 
     if not remote:
@@ -125,14 +255,22 @@ def sync_sessions(directory: Path, remote: str = "", cipher: Cipher | None = Non
 
     _set_origin(directory, remote)
     _ensure_gh_credentials(directory, remote)
-    branch = _git(directory, "rev-parse", "--abbrev-ref", "HEAD")
+    _git(directory, "fetch", "-q", "origin")
+    upstream = _remote_branch(directory)
+    branch = (
+        _align_branch(directory, upstream)
+        if upstream
+        else _git(directory, "symbolic-ref", "--short", "HEAD")
+    )
+    if upstream:
+        _rebase_onto(directory, branch)
     try:
         _git(directory, "push", "-q", "-u", "origin", branch)
     except SyncError:
-        # The usual cause is another machine having pushed first. Take its
-        # history - every file is append-only ciphertext, so a rebase is
-        # conflict-free unless the same session was edited twice - and retry.
-        _git(directory, "pull", "-q", "--rebase", "origin", branch)
+        # Another machine pushed in the window since the fetch: integrate
+        # its commits and try once more.
+        _git(directory, "fetch", "-q", "origin")
+        _rebase_onto(directory, branch)
         _git(directory, "push", "-q", "-u", "origin", branch)
     return f"git: pushed to {remote}"
 

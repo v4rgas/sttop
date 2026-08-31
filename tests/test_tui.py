@@ -109,6 +109,40 @@ def test_yank_before_any_transcript_copies_nothing():
     assert asyncio.run(scenario()) == []
 
 
+def test_quit_waits_for_a_background_pull(monkeypatch):
+    """A pull racing shutdown must finish before the app exits - quitting
+    mid-rebase would leave the repo half-done for the close-time sync."""
+    import time
+
+    events: list[str] = []
+
+    def slow_pull(directory, remote):
+        time.sleep(0.2)
+        events.append("pull finished")
+        return "git: up to date"
+
+    monkeypatch.setattr("sttop.sync.pull_sessions", slow_pull)
+
+    async def scenario():
+        config = Config()
+        config.storage.git_remote = "git@example.com:x.git"
+        app = SttopApp(config)
+        async with app.run_test() as pilot:
+            await pilot.press("q")
+        return events
+
+    assert asyncio.run(scenario()) == ["pull finished"]
+
+
+def test_no_remote_means_no_pull_worker():
+    async def scenario():
+        app = SttopApp(Config())
+        async with app.run_test():
+            return app._pull_worker
+
+    assert asyncio.run(scenario()) is None
+
+
 def test_a_long_session_path_gives_up_directories_not_the_filename(tmp_path):
     path = Path.home() / ".local/share/sttop/sessions/2026-08-11-1122-standup.md"
     assert shorten(path, 200).startswith("~/")
