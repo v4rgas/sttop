@@ -23,6 +23,34 @@ LONG = (
 )
 
 
+@pytest.fixture(autouse=True)
+def no_real_engine_boot(monkeypatch):
+    """UI tests exercise widgets, not audio hardware or downloaded models."""
+    class FakeEngine:
+        def __init__(self, *args, **kwargs):
+            self._status = EngineStatus()
+
+        def status(self):
+            return self._status
+
+        def transcript(self):
+            return ""
+
+        def toggle_pause(self):
+            return False
+
+        def rename_speaker(self, old, new):
+            return 0
+
+        async def start(self, title=None):
+            return Path("/tmp/sttop-test-session.md")
+
+        async def stop(self):
+            return None
+
+    monkeypatch.setattr("sttop.tui.Engine", FakeEngine)
+
+
 def screen_lines(width: int, height: int, utterances) -> list[str]:
     return asyncio.run(_screen_lines(width, height, utterances))
 
@@ -109,26 +137,23 @@ def test_yank_before_any_transcript_copies_nothing():
     assert asyncio.run(scenario()) == []
 
 
-def test_quit_waits_for_a_background_pull(monkeypatch):
+def test_quit_waits_for_a_background_pull():
     """A pull racing shutdown must finish before the app exits - quitting
     mid-rebase would leave the repo half-done for the close-time sync."""
-    import time
-
     events: list[str] = []
-
-    def slow_pull(directory, remote):
-        time.sleep(0.2)
-        events.append("pull finished")
-        return "git: up to date"
-
-    monkeypatch.setattr("sttop.sync.pull_sessions", slow_pull)
 
     async def scenario():
         config = Config()
         config.storage.git_remote = "git@example.com:x.git"
         app = SttopApp(config)
-        async with app.run_test() as pilot:
-            await pilot.press("q")
+        app._banner = lambda message: None
+        app.exit = lambda result=None: None
+        app._pull_worker = asyncio.get_running_loop().create_future()
+        asyncio.get_running_loop().call_later(
+            0.01,
+            lambda: (events.append("pull finished"), app._pull_worker.set_result(None)),
+        )
+        await app.action_quit()
         return events
 
     assert asyncio.run(scenario()) == ["pull finished"]

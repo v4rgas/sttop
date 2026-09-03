@@ -231,6 +231,23 @@ def test_machines_taking_turns_converge(tmp_path):
     assert (a / "s2.md.enc").is_file()  # and A now has B's session locally
 
 
+def test_a_machine_with_local_history_can_join_the_shared_remote(tmp_path):
+    """A laptop may record before sync is configured. Its independently
+    rooted history must be grafted onto the desktop's without losing either
+    machine's sessions."""
+    remote = bare(tmp_path)
+    desktop = machine(tmp_path, "desktop", ("desktop.md.enc", "desktop\n"))
+    sync_sessions(desktop, remote)
+
+    laptop = machine(tmp_path, "laptop", ("laptop.md.enc", "laptop\n"))
+    sync_sessions(laptop)  # creates an independent local root commit
+    assert "pushed" in sync_sessions(laptop, remote)
+
+    names = set(git(remote, "ls-tree", "-r", "--name-only", "main").splitlines())
+    assert {"desktop.md.enc", "laptop.md.enc"} <= names
+    assert (laptop / "desktop.md.enc").is_file()
+
+
 def test_a_conflicting_seal_goes_to_the_machine_with_the_plaintext(tmp_path):
     """Both machines rewrote the same session (a rename on each side, say).
     The one holding the plaintext .md is the authority - it can always

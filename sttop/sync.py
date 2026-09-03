@@ -163,7 +163,18 @@ def _resolve(directory: Path, name: str) -> None:
 def _rebase_onto(directory: Path, branch: str) -> None:
     """Rebase local commits onto origin/<branch>, resolving every conflict by
     policy. Aborts cleanly rather than leaving a half-done rebase behind."""
-    arguments = ["rebase", f"origin/{branch}"]
+    remote = f"origin/{branch}"
+    common = subprocess.run(
+        ["git", "-C", str(directory), "merge-base", "HEAD", remote],
+        capture_output=True,
+    )
+    # A machine may have recorded and committed locally before it was pointed
+    # at the shared remote. There is then no merge base, but the histories are
+    # still perfectly reconcilable: replay the complete local history on top
+    # of the remote instead of rejecting it as "unrelated".
+    arguments = ["rebase", remote] if common.returncode == 0 else (
+        ["rebase", "--onto", remote, "--root"]
+    )
     for _ in range(100):  # one iteration per conflicted commit, bounded
         try:
             _git(directory, *_identity(directory), "-c", "core.editor=true", *arguments)

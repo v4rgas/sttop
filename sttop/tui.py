@@ -235,9 +235,12 @@ class SttopApp(App):
         self.run_worker(self._boot(), exclusive=True)
         if self.config.storage.git_remote:
             # Other machines may have pushed sessions since last time; fetch
-            # them while the model loads. Its own group, or the exclusive
-            # boot worker would cancel it.
-            self._pull_worker = self.run_worker(self._pull_remote(), group="sync")
+            # them while the model loads. Keep the asyncio task itself: waiting
+            # on a Textual Worker from an action can deadlock the app's worker
+            # manager during shutdown.
+            self._pull_worker = asyncio.create_task(
+                self._pull_remote(), name="pull-sessions"
+            )
 
     async def _boot(self) -> None:
         try:
@@ -360,5 +363,5 @@ class SttopApp(App):
             # A pull still in flight finishes first: quitting mid-rebase would
             # leave the repo for the close-time sync to untangle.
             with contextlib.suppress(Exception):
-                await self._pull_worker.wait()
+                await self._pull_worker
         self.exit(await self.engine.stop())
