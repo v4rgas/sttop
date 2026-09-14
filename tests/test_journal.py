@@ -162,7 +162,8 @@ def test_a_session_is_filed_under_its_name_with_its_stamp(tmp_path):
     assert list_sessions(tmp_path) == [filed]
 
     (tmp_path / "2026-09-14-1030-session.md.enc").write_text("x")
-    again = file_session(tmp_path / "2026-09-14-1030-session.md.enc", tmp_path, "micelio/daily")
+    sealed = tmp_path / "2026-09-14-1030-session.md.enc"
+    again = file_session(sealed, tmp_path, "micelio/daily")
     assert again.name == "daily.2026-09-14-1030.md.enc"
     (tmp_path / "micelio" / "dev").mkdir()
 

@@ -222,7 +222,8 @@ class NameScreen(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static("save session as")
-            yield Input(placeholder="folder/name", suggester=NameSuggester(self.directory))
+            suggester = NameSuggester(self.directory)
+            yield Input(placeholder="folder/name", suggester=suggester)
             yield Static("tab complete · enter save & quit · esc back")
 
     def action_complete(self) -> None:
