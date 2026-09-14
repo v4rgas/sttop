@@ -203,3 +203,42 @@ def test_a_diarizer_merge_relabels_the_transcript(tmp_path):
     text = engine.journal.path.read_text()
     assert "**spk2**" not in text and text.count("**spk1**") == 2
     assert renames == [("spk2", "spk1", 1)]
+
+
+def test_utterances_stream_to_the_pipe_command(tmp_path, fake_captures):
+    import json
+
+    out = tmp_path / "stream.jsonl"
+    engine = engine_with_two_sources(tmp_path, failing=set())
+    engine.config.pipe = f"cat > {out}"
+
+    async def run():
+        await engine.start("piped")
+        engine._emit({"type": "utterance", "speaker": "you", "text": "hola"})
+        engine.rename_speaker("spk1", "Ana")
+        await engine.stop()
+
+    asyncio.run(run())
+    events = [json.loads(line) for line in out.read_text().splitlines()]
+    assert events == [
+        {"type": "utterance", "speaker": "you", "text": "hola"},
+        {"type": "rename", "old": "spk1", "new": "Ana"},
+    ]
+
+
+def test_a_pipe_command_that_dies_does_not_end_the_session(tmp_path, fake_captures):
+    errors: list[str] = []
+    engine = engine_with_two_sources(tmp_path, failing=set())
+    engine.config.pipe = "true"
+    engine._on_error = errors.append
+
+    async def run():
+        await engine.start("piped")
+        await engine._pipe.wait()
+        engine._emit({"type": "utterance"})
+        engine._emit({"type": "utterance"})
+        return await engine.stop()
+
+    assert asyncio.run(run()) is not None
+    piped = [e for e in errors if "[pipe]" in e]
+    assert piped == ["[pipe] `true` exited; stopped streaming"]

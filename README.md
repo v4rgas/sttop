@@ -91,6 +91,24 @@ recognise them rather than before you start.
 
 ![renaming a speaker mid-session](https://raw.githubusercontent.com/v4rgas/sttop/main/docs/rename.svg)
 
+### Streaming to another program
+
+`--pipe CMD` (or `pipe = "CMD"` in the config) starts `CMD` when recording starts and
+writes one JSON line to its stdin per utterance, the moment it is transcribed:
+
+```json
+{"type": "utterance", "source": "mic", "speaker": "you", "start": 12.4, "end": 14.1, "text": "let's ship it", "language": "en", "confidence": 0.93}
+{"type": "rename", "old": "spk1", "new": "Ana"}
+```
+
+stdin closes when recording stops, and the command gets 5 seconds to finish. Its stdout is
+discarded so it can't draw over the UI; its stderr goes to the session log.
+
+```bash
+sttop --pipe 'jq -r --unbuffered .text >> live.txt'
+sttop --pipe 'python feed_model.py'   # for line in sys.stdin: json.loads(line) ...
+```
+
 ## Output
 
 One Markdown file per session in `~/.local/share/sttop/sessions/`, flushed after every

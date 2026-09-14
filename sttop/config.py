@@ -143,6 +143,11 @@ class Config:
     storage: StorageConfig = field(default_factory=StorageConfig)
     #: One Markdown file per session lands here.
     sessions_dir: str = str(DATA_DIR / "sessions")
+    #: A shell command fed the transcript live: one JSON line per utterance
+    #: on its stdin ({"type": "utterance", "speaker", "text", "start", ...}),
+    #: plus {"type": "rename", "old", "new"} when a speaker is relabelled.
+    #: EOF when recording stops. e.g. "jq -r .text >> live.txt"
+    pipe: str = ""
     #: Where WAVs land when audio.save_wav is on.
     audio_dir: str = str(DATA_DIR / "audio")
 

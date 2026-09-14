@@ -54,6 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="how many voices to expect besides your own; caps the clustering",
     )
     record.add_argument("--save-wav", action="store_true", help="keep the raw audio")
+    record.add_argument(
+        "--pipe",
+        metavar="CMD",
+        help="stream each utterance as a JSON line to this command's stdin",
+    )
 
     devices_cmd = command("devices", "list audio sources")
     devices_cmd.add_argument(
@@ -452,6 +457,8 @@ def cmd_record(config: Config, args) -> int:
         config.diarize.max_speakers = max(0, args.speakers)
     if args.save_wav:
         config.audio.save_wav = True
+    if args.pipe:
+        config.pipe = args.pipe
 
     cipher = None
     if config.storage.encrypt == "always":

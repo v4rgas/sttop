@@ -23,10 +23,12 @@ reports it rather than dropping audio.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import diarize as diarize_mod
@@ -108,6 +110,8 @@ class Engine:
         self._queue: asyncio.Queue[Segment | None] = asyncio.Queue()
         self._consumer: asyncio.Task | None = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
+        #: The `pipe` command's process, fed one JSON line per event.
+        self._pipe: asyncio.subprocess.Process | None = None
         self._t0: float = 0.0
         self._paused = False
         self._running = False
@@ -162,6 +166,14 @@ class Engine:
         )
         self._t0 = time.monotonic()
         self._running = True
+        if self.config.pipe:
+            # stdout to nowhere: the child writing to the terminal would paint
+            # over the UI. stderr is already the session log.
+            self._pipe = await asyncio.create_subprocess_shell(
+                self.config.pipe,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.DEVNULL,
+            )
 
         for message in self._warnings:
             self._on_error(message)
@@ -215,7 +227,36 @@ class Engine:
         if self._running:
             self._running = False
             await self._drain(drain_timeout)
+        await self._close_pipe()
         return self._release()
+
+    def _emit(self, event: dict) -> None:
+        """One JSON line to the pipe command. A command that died costs the
+        stream, never the recording."""
+        if self._pipe is None:
+            return
+        # asyncio swallows a write to a dead pipe, so ask before writing.
+        if self._pipe.returncode is not None or self._pipe.stdin.is_closing():
+            self._on_error(f"[pipe] `{self.config.pipe}` exited; stopped streaming")
+            self._pipe = None
+            return
+        line = json.dumps(event, ensure_ascii=False) + "\n"
+        self._pipe.stdin.write(line.encode())
+
+    async def _close_pipe(self, timeout: float = 5.0) -> None:
+        """EOF, then a few seconds to finish - a model call may be in flight."""
+        pipe, self._pipe = self._pipe, None
+        if pipe is None:
+            return
+        with contextlib.suppress(Exception):
+            pipe.stdin.close()
+            await pipe.stdin.wait_closed()
+        try:
+            await asyncio.wait_for(pipe.wait(), timeout)
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                pipe.kill()
+            await pipe.wait()
 
     async def _drain(self, timeout: float) -> None:
         for capture in self._captures:
@@ -264,6 +305,7 @@ class Engine:
         return self._paused
 
     def rename_speaker(self, old: str, new: str) -> int:
+        self._emit({"type": "rename", "old": old, "new": new})
         return self.journal.rename_speaker(old, new) if self.journal else 0
 
     def transcript(self) -> str:
@@ -314,6 +356,7 @@ class Engine:
                 continue
             # Back on the loop: writing and notifying are cheap and ordered.
             self.journal.append(utterance)
+            self._emit({"type": "utterance", **asdict(utterance)})
             self._on_utterance(utterance)
             self._apply_merges()
 
@@ -328,6 +371,7 @@ class Engine:
             return
         for old, new in self.diarizer.take_merges():
             lines = self.journal.rename_speaker(old, new)
+            self._emit({"type": "rename", "old": old, "new": new})
             self._on_rename(old, new, lines)
 
     def _transcribe(self, segment: Segment) -> Utterance | None:
