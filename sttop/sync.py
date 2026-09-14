@@ -26,6 +26,7 @@ class SyncError(RuntimeError):
 
 GITIGNORE = f"""# managed by sttop - only encrypted sessions belong in this repo
 *
+!*/
 !.gitignore
 !{VAULT_NAME}
 !*{ENCRYPTED_SUFFIX}
@@ -70,7 +71,7 @@ def seal_sessions(directory: Path, cipher: Cipher) -> int:
     a rewrite nor a git delta.
     """
     sealed = 0
-    for source in directory.glob("*.md"):
+    for source in directory.rglob("*.md"):
         twin = source.with_name(source.name + ".enc")
         text = source.read_text(encoding="utf-8")
         if twin.is_file():
@@ -218,14 +219,14 @@ def pull_sessions(directory: Path, remote: str) -> str:
     if branch is None:
         return "git: remote is empty"
 
-    before = {p.name for p in directory.glob(f"*{ENCRYPTED_SUFFIX}")}
+    before = {p.name for p in directory.rglob(f"*{ENCRYPTED_SUFFIX}")}
     if _has_commits(directory):
         _rebase_onto(directory, _align_branch(directory, branch))
         verb = "pulled"
     else:
         _git(directory, "checkout", "-q", "-B", branch, f"origin/{branch}")
         verb = "adopted"
-    new = {p.name for p in directory.glob(f"*{ENCRYPTED_SUFFIX}")} - before
+    new = {p.name for p in directory.rglob(f"*{ENCRYPTED_SUFFIX}")} - before
     return f"git: {verb} {len(new)} session(s) from the remote" if new else (
         "git: up to date"
     )

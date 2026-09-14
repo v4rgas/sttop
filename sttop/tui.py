@@ -10,12 +10,15 @@ from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Vertical
+from textual.screen import ModalScreen
+from textual.suggester import Suggester
 from textual.widgets import Footer, Input, RichLog, Static
 
 from .config import Config
 from .diarize import SELF_LABEL
 from .engine import Engine, EngineStatus
-from .journal import Utterance, clock
+from .journal import Utterance, clock, file_session, name_candidates
 from .terminal import detect_theme
 
 SPEAKER_COLORS = ["cyan", "magenta", "yellow", "green", "blue", "red"]
@@ -176,6 +179,71 @@ class TranscriptLog(RichLog):
         self.write(Text(message, style="dim"), shrink=True)
 
 
+class NameSuggester(Suggester):
+    """The phantom text: the first completion Tab would give."""
+
+    def __init__(self, directory: Path) -> None:
+        super().__init__(use_cache=False, case_sensitive=True)
+        self.directory = directory
+
+    async def get_suggestion(self, value: str) -> str | None:
+        return next(iter(name_candidates(self.directory, value)), None)
+
+
+class NameScreen(ModalScreen[str | None]):
+    """Asked on the way out: where to file the session, e.g. `micelio/daily`.
+
+    Tab completes against existing folders and names; Tab again cycles the
+    other matches for what was typed. Enter files it (empty keeps the dated
+    default name), Escape goes back to recording.
+    """
+
+    CSS = """
+    NameScreen { align: center middle; }
+    NameScreen > Vertical {
+        width: 60; max-width: 100%; height: auto;
+        padding: 0 1; border: round $accent; background: $panel;
+    }
+    NameScreen Input { display: block; dock: none; }
+    NameScreen Static { color: $text-muted; }
+    """
+
+    BINDINGS = [
+        Binding("tab", "complete", show=False, priority=True),
+        Binding("escape", "cancel", show=False),
+    ]
+
+    def __init__(self, directory: Path) -> None:
+        super().__init__()
+        self.directory = directory
+        self._cycle: list[str] = []
+        self._at = 0
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static("save session as")
+            yield Input(placeholder="folder/name", suggester=NameSuggester(self.directory))
+            yield Static("tab complete · enter save & quit · esc back")
+
+    def action_complete(self) -> None:
+        field = self.query_one(Input)
+        if self._cycle and field.value == self._cycle[self._at]:
+            self._at = (self._at + 1) % len(self._cycle)
+        else:
+            self._cycle, self._at = name_candidates(self.directory, field.value), 0
+            if not self._cycle:
+                return
+        field.value = self._cycle[self._at]
+        field.cursor_position = len(field.value)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()  # not the app's rename field
+        self.dismiss(event.value.strip())
+
+
 class SttopApp(App):
     CSS = """
     /* No scrollbars anywhere: everything wraps, so a horizontal bar would
@@ -200,7 +268,7 @@ class SttopApp(App):
         Binding("space", "pause", "pause"),
         Binding("r", "rename", "rename speaker"),
         Binding("y", "yank", "copy transcript"),
-        Binding("ctrl+c", "quit", show=False),
+        Binding("ctrl+c", "finish", show=False),
     ]
 
     def __init__(
@@ -356,6 +424,17 @@ class SttopApp(App):
             self.query_one(TranscriptLog).note(f"— {message}")
 
     async def action_quit(self) -> None:
+        if self.journal_path is None:  # nothing recorded to name
+            await self.action_finish()
+            return
+
+        def named(name: str | None) -> None:
+            if name is not None:
+                self.run_worker(self.action_finish(name))
+
+        self.push_screen(NameScreen(Path(self.config.sessions_dir)), named)
+
+    async def action_finish(self, name: str = "") -> None:
         # Awaiting the drain keeps the UI painting while the last few segments
         # finish transcribing, instead of freezing on the way out.
         self._banner("finishing transcription…")
@@ -364,4 +443,7 @@ class SttopApp(App):
             # leave the repo for the close-time sync to untangle.
             with contextlib.suppress(Exception):
                 await self._pull_worker
-        self.exit(await self.engine.stop())
+        path = await self.engine.stop()
+        if path and name:
+            path = file_session(path, Path(self.config.sessions_dir), name)
+        self.exit(path)

@@ -174,3 +174,32 @@ def test_a_long_session_path_gives_up_directories_not_the_filename(tmp_path):
     assert shorten(path, 30) == "…/2026-08-11-1122-standup.md"
     assert shorten(path, 10) == "2026-08-11-1122-standup.md"
     assert shorten(None, 30) == ""
+
+
+def test_quit_asks_for_a_name_and_tab_completes(tmp_path):
+    (tmp_path / "micelio").mkdir()
+    (tmp_path / "micelio" / "daily.2026-09-13-1030.md").write_text("x")
+    session = tmp_path / "2026-09-14-1030-session.md"
+    session.write_text("x")
+
+    async def scenario():
+        config = Config()
+        config.sessions_dir = str(tmp_path)
+        app = SttopApp(config)
+
+        async def stop():
+            return session
+
+        app.engine.stop = stop
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("q", "m", "tab")
+            field = app.screen.query_one("Input")
+            assert field.value == "micelio"
+            await pilot.press("slash", "d", "tab")
+            assert field.value == "micelio/daily"
+            await pilot.press("enter")
+            await pilot.pause()
+        return app.return_value
+
+    assert asyncio.run(scenario()) == tmp_path / "micelio" / "daily.2026-09-14-1030.md"

@@ -78,7 +78,7 @@ uv run sttop config                # write ~/.config/sttop/config.toml
 uv run sttop theme                 # show the detected terminal colour scheme
 ```
 
-Keys: `q` quit · `space` pause · `r` rename a speaker · `y` copy the transcript so far.
+Keys: `q` name the session & quit (`micelio/daily` → `micelio/daily.DATE.md`, tab completes) · `ctrl+c` quit unnamed · `space` pause · `r` rename a speaker · `y` copy the transcript so far.
 
 `y` puts everything transcribed *up to this moment* on the clipboard — for pasting
 into notes or an assistant while the meeting is still going, without stopping the

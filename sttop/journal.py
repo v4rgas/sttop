@@ -174,14 +174,73 @@ class Journal:
             return replaced
 
 
+#: The `YYYY-MM-DD-HHMM` every session filename carries somewhere.
+STAMP = re.compile(r"\d{4}-\d{2}-\d{2}-\d{4}")
+#: A session filed under a name: `daily.2026-09-14-1030.md`.
+NAMED = re.compile(r"^(.+)\.\d{4}-\d{2}-\d{2}-\d{4}(-\d+)?\.md(\.enc)?$")
+
+
+def _name_parts(name: str) -> list[str]:
+    """`micelio/daily` as path segments, with nothing that escapes the directory."""
+    return [part for part in name.split("/") if part.strip() and part not in (".", "..")]
+
+
+def file_session(path: Path, directory: Path, name: str) -> Path:
+    """Move a finished session to `<name>.<stamp><extension>` under directory.
+
+    The name may hold folders (`micelio/daily`); the stamp is the one the
+    session was created with, so a name never loses when it happened.
+    """
+    parts = _name_parts(name)
+    if not parts:
+        return path
+    extension = ".md.enc" if path.name.endswith(".md.enc") else ".md"
+    match = STAMP.search(path.name)
+    stamp = match.group() if match else f"{datetime.now():%Y-%m-%d-%H%M}"
+    folder = directory.joinpath(*parts[:-1])
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{parts[-1]}.{stamp}{extension}"
+    suffix = 2
+    while target.exists():
+        target = folder / f"{parts[-1]}.{stamp}-{suffix}{extension}"
+        suffix += 1
+    return path.replace(target)
+
+
+def name_candidates(directory: Path, typed: str) -> list[str]:
+    """Completions for a half-typed session name: folders, and the names
+    sessions have already been filed under, at the level being typed."""
+    head, slash, tail = typed.rpartition("/")
+    if ".." in head.split("/"):
+        return []
+    base = directory.joinpath(*_name_parts(head))
+    if not base.is_dir():
+        return []
+    names = set()
+    for entry in base.iterdir():
+        if entry.name.startswith("."):
+            continue
+        if entry.is_dir():
+            names.add(entry.name)
+        elif match := NAMED.match(entry.name):
+            names.add(match.group(1))
+    return [f"{head}{slash}{n}" for n in sorted(names) if n.startswith(tail)]
+
+
 def list_sessions(directory: Path, limit: int = 50) -> list[Path]:
-    """Newest first. A session with both a plaintext file and its sealed twin
-    (sync mode) is one session, and the plaintext - the readable one - wins."""
+    """Newest first, folders included. A session with both a plaintext file
+    and its sealed twin (sync mode) is one session, and the plaintext - the
+    readable one - wins."""
     if not directory.is_dir():
         return []
-    sessions: dict[str, Path] = {}
-    for path in directory.glob("*.md.enc"):
-        sessions[path.name.removesuffix(".enc")] = path
-    for path in directory.glob("*.md"):
-        sessions[path.name] = path
-    return sorted(sessions.values(), key=lambda p: p.name, reverse=True)[:limit]
+    sessions: dict[Path, Path] = {}
+    for path in directory.rglob("*.md.enc"):
+        sessions[path.with_name(path.name.removesuffix(".enc"))] = path
+    for path in directory.rglob("*.md"):
+        sessions[path] = path
+
+    def newest(path: Path) -> str:
+        match = STAMP.search(path.name)
+        return match.group() if match else path.name
+
+    return sorted(sessions.values(), key=newest, reverse=True)[:limit]

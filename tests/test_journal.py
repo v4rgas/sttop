@@ -150,3 +150,23 @@ def test_rename_leaves_no_debris(tmp_path):
 
     assert [p.name for p in tmp_path.iterdir()] == [journal.path.name]
     assert list_sessions(tmp_path) == [journal.path]
+
+
+def test_a_session_is_filed_under_its_name_with_its_stamp(tmp_path):
+    from sttop.journal import file_session, list_sessions, name_candidates
+
+    first = tmp_path / "2026-09-14-1030-session.md"
+    first.write_text("x")
+    filed = file_session(first, tmp_path, "micelio/daily")
+    assert filed == tmp_path / "micelio" / "daily.2026-09-14-1030.md"
+    assert list_sessions(tmp_path) == [filed]
+
+    (tmp_path / "2026-09-14-1030-session.md.enc").write_text("x")
+    again = file_session(tmp_path / "2026-09-14-1030-session.md.enc", tmp_path, "micelio/daily")
+    assert again.name == "daily.2026-09-14-1030.md.enc"
+    (tmp_path / "micelio" / "dev").mkdir()
+
+    assert name_candidates(tmp_path, "m") == ["micelio"]
+    assert name_candidates(tmp_path, "micelio/d") == ["micelio/daily", "micelio/dev"]
+    assert name_candidates(tmp_path, "../") == []
+    assert file_session(filed, tmp_path, "../..") == filed  # nothing escapes
