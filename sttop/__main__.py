@@ -66,7 +66,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     command("doctor", "check audio deps and explain anything missing")
-    command("sessions", "list recorded sessions")
+    sub.add_parser(
+        "sessions", aliases=["ls"], help="list recorded sessions", parents=[common]
+    )
 
     read = command("read", "open a transcript, decrypting it if needed")
     read.add_argument(
@@ -509,6 +511,7 @@ def _sync_after_record(config: Config) -> None:
 
 COMMANDS = {
     "record", "devices", "doctor", "sessions", "read", "sync", "theme", "config",
+    "ls",
 }
 
 
@@ -539,7 +542,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_devices(config, args)
     if args.command == "doctor":
         return cmd_doctor(config)
-    if args.command == "sessions":
+    if args.command in ("sessions", "ls"):
         return cmd_sessions(config)
     if args.command == "read":
         return cmd_read(config, args)
