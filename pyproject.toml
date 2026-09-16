@@ -1,12 +1,12 @@
 [project]
 name = "sttop"
-version = "0.9.0"
+version = "0.10.0"
 description = "Live speech-to-text monitor for the terminal. Taps mic + system audio, transcribes and labels speakers in real time, stores everything locally."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "v4rgas" }]
-keywords = ["speech-to-text", "transcription", "whisper", "diarization", "tui", "terminal"]
+keywords = ["speech-to-text", "transcription", "parakeet", "diarization", "tui", "terminal"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -24,12 +24,13 @@ classifiers = [
 dependencies = [
     "textual>=0.80",
     "numpy>=1.24",
-    "faster-whisper>=1.0.3",
     "webrtcvad-wheels>=2.0.14",
     "platformdirs>=4.0",
+    "packaging>=24",
     # storage.encrypt: scrypt + AES-GCM for the session vault.
     "cryptography>=42",
     "onnx-asr[cpu,hub]>=0.12",
+    "parakeet-mlx>=0.5.2,<0.6; sys_platform == 'darwin' and platform_machine == 'arm64'",
     # Fallback ffmpeg, fetched on first use only when the system has none, so
     # a fresh `uvx sttop` records instead of printing a package name.
     "static-ffmpeg>=2.7",
@@ -59,8 +60,7 @@ Repository = "https://github.com/v4rgas/sttop"
 Issues = "https://github.com/v4rgas/sttop/issues"
 
 # Default torch to the CPU wheels. The stock PyPI torch bundles CUDA (~2.5GB) and
-# CTranslate2 (faster-whisper) has no ROCm backend anyway, so a GPU build buys
-# nothing here. To use an AMD GPU for diarization, resync against
+# transcription uses ONNX CPU or MLX. To use an AMD GPU for diarization, resync against
 # https://download.pytorch.org/whl/rocm6.2 instead.
 [[tool.uv.index]]
 name = "pytorch-cpu"

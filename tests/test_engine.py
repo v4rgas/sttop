@@ -242,3 +242,87 @@ def test_a_pipe_command_that_dies_does_not_end_the_session(tmp_path, fake_captur
     assert asyncio.run(run()) is not None
     piped = [e for e in errors if "[pipe]" in e]
     assert piped == ["[pipe] `true` exited; stopped streaming"]
+
+
+def test_model_initialization_overlaps_and_reports_the_remaining_stage(
+    tmp_path, monkeypatch
+):
+    import threading
+
+    speech_entered, speaker_entered = threading.Event(), threading.Event()
+    release_speech, release_speaker = threading.Event(), threading.Event()
+    engine = Engine(Config(sessions_dir=str(tmp_path)), lambda utterance: None)
+    monkeypatch.setattr(engine, "_resolve_sources", lambda: (None, None))
+
+    def speech(config):
+        speech_entered.set()
+        assert release_speech.wait(5)
+        return FakeModel()
+
+    def speakers(config):
+        speaker_entered.set()
+        assert release_speaker.wait(5)
+        return FakeModel()
+
+    monkeypatch.setattr(engine_mod.stt, "build", speech)
+    monkeypatch.setattr(engine_mod.diarize_mod, "build", speakers)
+
+    async def wait_until(predicate):
+        async with asyncio.timeout(3):
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+    async def run():
+        preparing = asyncio.create_task(engine.prepare())
+        try:
+            await wait_until(lambda: speech_entered.is_set() and speaker_entered.is_set())
+            assert "speech model" in engine.status().loading
+            assert "speaker model" in engine.status().loading
+            release_speech.set()
+            await wait_until(lambda: engine.transcriber is not None)
+            assert engine.status().loading == "Loading speaker model"
+            assert not engine.status().running
+        finally:
+            release_speech.set()
+            release_speaker.set()
+            await preparing
+            await engine.stop()
+
+    asyncio.run(run())
+
+
+def test_quit_during_loading_closes_models_without_starting_capture(
+    tmp_path, monkeypatch
+):
+    import threading
+
+    entered, release = threading.Event(), threading.Event()
+    model = FakeModel()
+    engine = Engine(Config(sessions_dir=str(tmp_path)), lambda utterance: None)
+    monkeypatch.setattr(engine, "_resolve_sources", lambda: (None, None))
+
+    def speech(config):
+        entered.set()
+        assert release.wait(5)
+        return model
+
+    monkeypatch.setattr(engine_mod.stt, "build", speech)
+    monkeypatch.setattr(engine_mod.diarize_mod, "build", lambda config: FakeModel())
+
+    async def run():
+        boot = asyncio.create_task(engine.start())
+        async with asyncio.timeout(3):
+            while not entered.is_set():
+                await asyncio.sleep(0.01)
+        stopping = asyncio.create_task(engine.stop())
+        await asyncio.sleep(0)
+        assert not stopping.done()
+        release.set()
+        await stopping
+        with pytest.raises(asyncio.CancelledError):
+            await boot
+        assert model.closed
+        assert engine.transcriber is None
+        assert engine.journal is None
+
+    asyncio.run(run())

@@ -7,25 +7,26 @@ from sttop.config import Config, ConfigError
 
 def test_defaults_are_local_first():
     config = Config()
-    assert config.stt.backend == "parakeet"
+    assert config.stt.model == ""
     assert config.diarize.enabled is True
 
 
 def test_toml_overlay_is_partial(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text(
-        '[stt]\nmodel = "medium"\n\n[vad]\nsilence_ms = 300\n\nunknown_key = 1\n'
+        '[stt]\nmodel = "nemo-parakeet-tdt-0.6b-v2"\n'
+        '\n[vad]\nsilence_ms = 300\n\nunknown_key = 1\n'
     )
     config = Config.load(path)
-    assert config.stt.model == "medium"
+    assert config.stt.model == "nemo-parakeet-tdt-0.6b-v2"
     assert config.vad.silence_ms == 300
     # Untouched fields keep their defaults.
-    assert config.stt.backend == "parakeet"
+    assert config.stt.language is None
     assert config.vad.aggressiveness == 2
 
 
 def test_missing_file_yields_defaults(tmp_path):
-    assert Config.load(tmp_path / "absent.toml").stt.backend == Config().stt.backend
+    assert Config.load(tmp_path / "absent.toml").stt == Config().stt
 
 
 def test_a_section_given_a_scalar_is_rejected(tmp_path):
@@ -67,12 +68,22 @@ def test_generated_config_reloads_as_the_defaults(tmp_path):
 
 def test_dumped_config_round_trips():
     original = Config()
-    original.stt.model = "medium"
+    original.stt.model = "nemo-parakeet-tdt-0.6b-v2"
     original.diarize.enabled = False
     original.audio.save_wav = True
 
     parsed = tomllib.loads(original.to_toml())
-    assert parsed["stt"]["model"] == "medium"
+    assert parsed["stt"]["model"] == "nemo-parakeet-tdt-0.6b-v2"
     assert parsed["diarize"]["enabled"] is False
     assert parsed["audio"]["save_wav"] is True
     assert parsed["vad"]["max_segment_s"] == 15.0
+
+
+def test_legacy_whisper_selection_migrates_to_parakeet(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[stt]\nbackend = "whisper"\nmodel = "small"\ndevice = "cuda"\n')
+    config = Config.load(path)
+    assert config.stt.model == ""
+    assert config.stt.backend == "auto"
+    assert "whisper" not in config.to_toml()
+    assert "compute_type" not in config.to_toml()

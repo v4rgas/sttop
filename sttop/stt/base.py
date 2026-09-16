@@ -17,7 +17,7 @@ class Transcript:
 
 
 class Transcriber(Protocol):
-    #: Shown in the TUI status bar, e.g. "whisper small/cpu int8".
+    #: Shown in the TUI status bar, e.g. "parakeet-tdt/cpu onnx".
     describe: str
 
     def transcribe(self, pcm: bytes) -> Transcript: ...

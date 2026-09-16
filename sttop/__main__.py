@@ -12,7 +12,6 @@ from pathlib import Path
 
 from . import __version__
 from .config import CONFIG_PATH, DATA_DIR, Config, ConfigError, write_default_config
-from .stt import BACKENDS
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,10 +40,13 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("-t", "--title", help="session title, used in the filename")
     record.add_argument("--mic", help="mic source name or substring")
     record.add_argument("--system", help="system/monitor source name or substring")
-    record.add_argument("-m", "--model", help="override the backend's default model")
-    record.add_argument("--backend", choices=list(BACKENDS))
+    record.add_argument("-m", "--model", help="override the default Parakeet model")
     record.add_argument(
-        "--language", help="force a language, e.g. es (default: autodetect)"
+        "--backend", choices=("auto", "onnx", "mlx"),
+        help="transcription engine (default: MLX on Apple Silicon, ONNX elsewhere)",
+    )
+    record.add_argument(
+        "--language", help="language tag for transcript metadata (speech is autodetected)"
     )
     record.add_argument("--no-diarize", action="store_true", help="skip speaker id")
     record.add_argument(
@@ -67,7 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     command("doctor", "check audio deps and explain anything missing")
     sub.add_parser(
-        "sessions", aliases=["ls"], help="list recorded sessions", parents=[common]
+        "sessions", aliases=["ls"], help="list recorded sessions as a folder tree",
+        parents=[common],
     )
 
     read = command("read", "open a transcript, decrypting it if needed")
@@ -240,10 +243,25 @@ def cmd_sessions(config: Config) -> int:
     if not paths:
         print(f"no sessions yet in {directory}")
         return 0
-    for path in paths:
-        size = path.stat().st_size
-        print(f"{path.name:<52} {size / 1024:6.1f} KiB")
-    print(f"\n{len(paths)} session(s) in {directory}")
+    def print_tree(folder: Path, sessions: list[Path], prefix: str = "") -> None:
+        children: dict[str, list[Path]] = {}
+        for path in sessions:
+            name = path.relative_to(folder).parts[0]
+            children.setdefault(name, []).append(path)
+        for index, (name, entries) in enumerate(children.items()):
+            last = index == len(children) - 1
+            branch = "└── " if last else "├── "
+            child = folder / name
+            if child == entries[0]:
+                size = child.stat().st_size
+                print(f"{prefix}{branch}{name}  {size / 1024:.1f} KiB")
+            else:
+                print(f"{prefix}{branch}{name}/")
+                print_tree(child, entries, prefix + ("    " if last else "│   "))
+
+    print(f"{directory}/")
+    print_tree(directory, paths)
+    print(f"\n{len(paths)} session(s)")
     return 0
 
 
@@ -472,9 +490,8 @@ def cmd_record(config: Config, args) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
-    from .nativelog import quiet_onnxruntime, stderr_to, tail
+    from .nativelog import stderr_to, tail
 
-    quiet_onnxruntime()
     log_path = DATA_DIR / "session.log"
     # fd 2 belongs to the log for the length of the run: a native library
     # writing to it mid-session paints over the UI, which is unreadable and

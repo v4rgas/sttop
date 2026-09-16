@@ -1,6 +1,6 @@
 """Wires capture -> VAD -> transcription -> diarization -> Markdown journal.
 
-Concurrency model - one thread boundary, and it is the model:
+Concurrency model during recording - one thread boundary, and it is the model:
 
   capture tasks (2)   asyncio: read ffmpeg stdout, run VAD inline (microseconds)
         |
@@ -14,7 +14,8 @@ Everything except the model runs on the event loop, so the UI needs no
 cross-thread marshalling and shutdown is ordinary task cancellation. The
 executor is deliberately single-threaded: transcription is CPU-bound and
 already internally parallel, so a second worker would only thrash the cache -
-and serialising it keeps utterances in the order they were spoken.
+and serialising it keeps utterances in the order they were spoken. During
+startup only, independent speech and speaker models initialize concurrently.
 
 When transcription falls behind, the queue absorbs the lag and `backlog`
 reports it rather than dropping audio.
@@ -76,6 +77,8 @@ class EngineStatus:
     speakers: int = 0
     backend: str = "no backend"
     diarizer: str = "diarize off"
+    loading: str = ""
+    loading_elapsed: float = 0.0
 
 
 class Engine:
@@ -115,22 +118,61 @@ class Engine:
         self._t0: float = 0.0
         self._paused = False
         self._running = False
+        self._loading = ""
+        self._loading_t0 = 0.0
+        self._preparing: asyncio.Task | None = None
+        self._stopping = False
 
     # -- lifecycle ---------------------------------------------------------
 
     async def prepare(self) -> None:
-        """Resolve devices and load models - seconds of blocking work, so all
-        of it goes to the executor and the caller stays responsive."""
+        """Load independent models concurrently, keeping the UI responsive."""
+        if self._preparing is None:
+            self._stopping = False
+            self._preparing = asyncio.create_task(self._prepare())
+        try:
+            await asyncio.shield(self._preparing)
+        except asyncio.CancelledError:
+            # Cancelling an executor future cannot cancel its model load. Let
+            # ownership land on the engine so stop() can close it safely.
+            await self._preparing
+            raise
+        finally:
+            self._preparing = None
+
+    async def _prepare(self) -> None:
         loop = asyncio.get_running_loop()
+        self._loading_t0 = time.monotonic()
+        self._loading = "Resolving audio devices"
         self.mic_source, self.sys_source = await loop.run_in_executor(
             self._executor, self._resolve_sources
         )
-        self.transcriber = await loop.run_in_executor(
-            self._executor, stt.build, self.config.stt
-        )
-        self.diarizer = await loop.run_in_executor(
-            self._executor, diarize_mod.build, self.config.diarize
-        )
+        pending = {"speech model", "speaker model"}
+
+        def refresh() -> None:
+            self._loading = "Loading " + " + ".join(sorted(pending))
+
+        async def speech() -> None:
+            self.transcriber = await loop.run_in_executor(
+                self._executor, stt.build, self.config.stt
+            )
+            pending.remove("speech model")
+            refresh()
+
+        async def speakers() -> None:
+            # Only initialization uses another thread; inference stays serial.
+            self.diarizer = await asyncio.to_thread(
+                diarize_mod.build, self.config.diarize
+            )
+            pending.remove("speaker model")
+            refresh()
+
+        refresh()
+        results = await asyncio.gather(speech(), speakers(), return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        self._loading = "Starting audio capture"
 
     def _resolve_sources(
         self,
@@ -155,6 +197,8 @@ class Engine:
             raise RuntimeError("engine already running")
         if self.transcriber is None:
             await self.prepare()
+        if self._stopping:
+            raise asyncio.CancelledError
 
         self.journal = Journal.create(
             Path(self.config.sessions_dir),
@@ -204,8 +248,8 @@ class Engine:
                 if label == MIC:
                     raise
                 self._on_error(
-                    f"[{label}] {exc} - recording the microphone only. "
-                    "Run `sttop doctor` for how to enable system audio."
+                    f"[{label}] Recording the microphone only. {exc}\n"
+                    "Help: `sttop doctor`."
                 )
                 continue
             # Registered only once it is live, so a stream that never started
@@ -214,6 +258,7 @@ class Engine:
             self._captures.append(capture)
 
         self._consumer = asyncio.create_task(self._consume(), name="transcribe")
+        self._loading = ""
         return self.journal.path
 
     async def stop(self, drain_timeout: float = 30.0) -> Path | None:
@@ -224,6 +269,10 @@ class Engine:
         the executor thread, and those must go back whether or not any audio
         was ever captured.
         """
+        self._stopping = True
+        if self._preparing is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.shield(self._preparing)
         if self._running:
             self._running = False
             await self._drain(drain_timeout)
@@ -296,6 +345,7 @@ class Engine:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
         self._captures.clear()
         self._segmenters.clear()
+        self._loading = ""
         return path
 
     def toggle_pause(self) -> bool:
@@ -327,6 +377,9 @@ class Engine:
             speakers=self.diarizer.speaker_count if self.diarizer else 0,
             backend=self.transcriber.describe if self.transcriber else "no backend",
             diarizer=self.diarizer.describe if self.diarizer else "diarize off",
+            loading=self._loading,
+            loading_elapsed=(time.monotonic() - self._loading_t0)
+            if self._loading else 0.0,
         )
 
     # -- internals ---------------------------------------------------------

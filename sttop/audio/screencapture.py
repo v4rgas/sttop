@@ -465,14 +465,13 @@ def _shareable_content():
     _let_the_callback_thread_finish()
     if not answered:
         raise AudioError(
-            "ScreenCaptureKit did not answer - screen recording permission is "
-            "probably not granted yet. Grant it to your terminal in System "
+            "System audio timed out. Check your terminal's permission in System "
             "Settings > Privacy & Security > Screen & System Audio Recording."
         )
     if failure:
         raise AudioError(
-            f"ScreenCaptureKit refused: {failure[0]}. Grant screen recording "
-            "permission to your terminal in System Settings > Privacy & "
+            "System audio unavailable. Allow your terminal in "
+            "System Settings > Privacy & "
             "Security > Screen & System Audio Recording."
         )
     return result[0]

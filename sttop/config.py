@@ -51,17 +51,13 @@ class VadConfig:
 
 @dataclass
 class SttConfig:
-    #: "parakeet" (onnxruntime) or "whisper" (faster-whisper).
-    backend: str = "parakeet"
-    #: Blank picks the default model for the chosen backend.
+    #: "auto" uses MLX on Apple Silicon and ONNX on other platforms.
+    #: Set "onnx" to force CPU transcription, or "mlx" to require MLX.
+    backend: str = "auto"
+    #: Blank picks the default multilingual Parakeet model.
     model: str = ""
-    #: "auto" | "cpu" | "cuda". Whisper only; parakeet is CPU/onnxruntime.
-    device: str = "auto"
-    #: "auto" | "int8" | "int8_float16" | "float16" | "float32"
-    compute_type: str = "auto"
-    #: None lets Whisper autodetect per segment.
+    #: Optional language label for the transcript; Parakeet autodetects speech.
     language: str | None = None
-    beam_size: int = 1
 
 
 @dataclass
@@ -171,6 +167,14 @@ def _merge(target, data: dict, prefix: str = "") -> None:
     but a key with the *wrong shape* is rejected here, where the file and line
     are still in hand.
     """
+    if isinstance(target, SttConfig) and data.get("backend") == "whisper":
+        # Old installations may have pinned a Whisper model such as "small".
+        # Migrate that selection along with its removed backend.
+        data = {
+            key: value for key, value in data.items() if key not in ("model", "backend")
+        }
+    elif isinstance(target, SttConfig) and data.get("backend") == "parakeet":
+        data = {**data, "backend": "onnx"}
     known = {f.name: f for f in fields(target)}
     for key, value in data.items():
         if key not in known:

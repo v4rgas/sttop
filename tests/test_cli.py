@@ -37,9 +37,14 @@ def test_record_options_do_not_need_the_subcommand():
     assert (args.command, args.title) == ("record", "standup")
 
 
-def test_backend_shorthand():
-    args = parse("--backend", "whisper", "-m", "small")
-    assert (args.command, args.backend, args.model) == ("record", "whisper", "small")
+def test_model_shorthand():
+    args = parse("-m", "nemo-parakeet-tdt-0.6b-v3")
+    assert (args.command, args.model) == ("record", "nemo-parakeet-tdt-0.6b-v3")
+
+
+def test_backend_override_without_record_subcommand():
+    args = parse("--backend", "mlx")
+    assert (args.command, args.backend) == ("record", "mlx")
 
 
 def test_subcommands_are_left_alone():
@@ -323,7 +328,7 @@ def test_empty_argv_is_not_the_process_argv(monkeypatch, tmp_path, capsys):
 
 def test_bad_config_is_reported_not_raised(tmp_path, capsys):
     path = tmp_path / "config.toml"
-    path.write_text('stt = "whisper"\n')  # a section given a scalar
+    path.write_text('stt = "parakeet"\n')  # a section given a scalar
     assert main(["-c", str(path), "sessions"]) == 1
     assert "bad config" in capsys.readouterr().err
 

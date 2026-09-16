@@ -1,7 +1,7 @@
 """End-to-end check: play speech into the default sink, read it back off the
 monitor source, and assert the transcript lands in the Markdown journal.
 
-Needs a running audio server and downloads the `tiny` Whisper model, so it is
+Needs a running audio server and downloads the Parakeet model, so it is
 opt-in: STTOP_INTEGRATION=1 uv run --extra dev pytest
 """
 

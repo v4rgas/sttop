@@ -10,6 +10,7 @@ from __future__ import annotations
 from .. import SAMPLE_RATE
 from ..config import SttConfig
 from .base import Transcript, pcm_to_float32
+from .sources import ONNX_FILES, ONNX_SOURCES, snapshot
 
 
 class ParakeetTranscriber:
@@ -23,7 +24,12 @@ class ParakeetTranscriber:
         quiet_onnxruntime()
 
         self.config = config
-        self._model = onnx_asr.load_model(config.model)
+        # This is the CPU backend. Auto-selecting CoreML on macOS can compile
+        # model partitions during startup, delaying capture unnecessarily.
+        options = {"providers": ["CPUExecutionProvider"]}
+        if source := ONNX_SOURCES.get(config.model):
+            options["path"] = snapshot(*source, ONNX_FILES)
+        self._model = onnx_asr.load_model(config.model, **options)
         short = config.model.removeprefix("nemo-").removesuffix("-0.6b-v3")
         self.describe = f"{short}/cpu onnx"
 

@@ -13,13 +13,14 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.suggester import Suggester
-from textual.widgets import Footer, Input, RichLog, Static
+from textual.widgets import Footer, Input, ProgressBar, RichLog, Static
 
 from .config import Config
 from .diarize import SELF_LABEL
 from .engine import Engine, EngineStatus
 from .journal import Utterance, clock, file_session, name_candidates
 from .terminal import detect_theme
+from .updates import UpdateNotice, start_update_check
 
 SPEAKER_COLORS = ["cyan", "magenta", "yellow", "green", "blue", "red"]
 
@@ -82,7 +83,12 @@ def status_line(status: EngineStatus, width: int) -> str:
     Guessing where the cutoffs fall is how a status bar ends up one column too
     long on somebody else's font and backend name; this measures instead.
     """
+    if status.loading:
+        text = f"sttop  starting {clock(status.loading_elapsed)}"
+        return str(Text(text[:width], style="yellow"))
     state = "[yellow]paused[/]" if status.paused else "[green]●[/] rec"
+    if not status.running:
+        state = "[dim]idle[/]"
     head = f"[b]sttop[/]  {state} [b]{clock(status.elapsed)}[/]"
 
     def meters(bars: int) -> str:
@@ -253,6 +259,7 @@ class SttopApp(App):
     Screen { layout: vertical; overflow: hidden; }
     StatusBar { height: 1; padding: 0 1; background: $panel; color: $text; }
     #banner { height: auto; max-height: 2; padding: 0 1; color: $text-muted; }
+    #loading-progress { height: 1; margin: 0 1; }
     TranscriptLog {
         height: 1fr;
         padding: 0 1;
@@ -292,6 +299,8 @@ class SttopApp(App):
     def compose(self) -> ComposeResult:
         yield StatusBar()
         yield Static("", id="banner")
+        yield ProgressBar(total=None, show_eta=False, show_percentage=False,
+                          id="loading-progress")
         yield TranscriptLog()
         yield Input(placeholder="rename: old=new  (e.g. spk1=Ana)", id="rename")
         yield Footer()
@@ -299,7 +308,9 @@ class SttopApp(App):
     def on_mount(self) -> None:
         self.title = "sttop"
         self.theme = self._theme
+        start_update_check(self._on_update_available)
         self._banner("loading model…")
+        self.set_interval(0.2, self._refresh_status)
         # prepare() offloads the slow model load itself, so this stays on the loop.
         self.run_worker(self._boot(), exclusive=True)
         if self.config.storage.git_remote:
@@ -323,7 +334,7 @@ class SttopApp(App):
             self._fatal(f"{type(exc).__name__}: {exc}")
             return
         self._banner(self._recording_message())
-        self.set_interval(0.2, self._refresh_status)
+        self.query_one("#loading-progress", ProgressBar).display = False
 
     def _recording_message(self) -> str:
         return f"writing → {shorten(self.journal_path, self.size.width - 11)}"
@@ -332,6 +343,7 @@ class SttopApp(App):
         self.query_one("#banner", Static).update(f"[dim]{message}[/]")
 
     def _fatal(self, message: str) -> None:
+        self.query_one("#loading-progress", ProgressBar).display = False
         self.query_one(TranscriptLog).write(Text(f"error {message}", style="bold red"))
         self._banner("startup failed — press q to quit")
 
@@ -357,7 +369,10 @@ class SttopApp(App):
         )
 
     def _refresh_status(self) -> None:
-        self.query_one(StatusBar).render_status(self.engine.status())
+        status = self.engine.status()
+        self.query_one(StatusBar).render_status(status)
+        if status.loading:
+            self._banner(f"{status.loading}… {clock(status.loading_elapsed)} elapsed")
 
     # -- actions -----------------------------------------------------------
 
@@ -403,6 +418,15 @@ class SttopApp(App):
         old, new = pair
         changed = self.engine.rename_speaker(old, new)
         self._banner(f"renamed {old} → {new} in {changed} line(s)")
+
+    def _on_update_available(self, notice: UpdateNotice) -> None:
+        # The daemon may finish after the app has closed. Marshal widget
+        # access onto Textual's loop while it is still running.
+        with contextlib.suppress(RuntimeError):
+            self.call_from_thread(self._show_update, notice)
+
+    def _show_update(self, notice: UpdateNotice) -> None:
+        self.query_one(TranscriptLog).note(notice.message)
 
     async def _pull_remote(self) -> None:
         """Fetch what other machines pushed, while the model loads.

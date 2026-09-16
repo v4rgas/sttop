@@ -203,3 +203,31 @@ def test_quit_asks_for_a_name_and_tab_completes(tmp_path):
         return app.return_value
 
     assert asyncio.run(scenario()) == tmp_path / "micelio" / "daily.2026-09-14-1030.md"
+
+
+def test_loading_shows_stage_and_progress_without_claiming_to_record(monkeypatch):
+    async def run():
+        app = SttopApp(Config())
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_start(title=None):
+            app.engine._status.loading = "Loading speech model"
+            app.engine._status.loading_elapsed = 3
+            entered.set()
+            await release.wait()
+            app.engine._status.loading = ""
+            return Path("/tmp/sttop-test-session.md")
+
+        monkeypatch.setattr(app.engine, "start", slow_start)
+        async with app.run_test() as pilot:
+            await entered.wait()
+            app._refresh_status()
+            assert app.query_one("#loading-progress").display
+            assert "Loading speech model" in str(app.query_one("#banner").render())
+            assert "rec" not in status_line(app.engine.status(), 80)
+            release.set()
+            await pilot.pause()
+            assert not app.query_one("#loading-progress").display
+
+    asyncio.run(run())
