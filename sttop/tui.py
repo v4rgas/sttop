@@ -83,7 +83,7 @@ def status_line(status: EngineStatus, width: int) -> str:
     Guessing where the cutoffs fall is how a status bar ends up one column too
     long on somebody else's font and backend name; this measures instead.
     """
-    if status.loading:
+    if status.loading and not status.running:
         text = f"sttop  starting {clock(status.loading_elapsed)}"
         return str(Text(text[:width], style="yellow"))
     state = "[yellow]paused[/]" if status.paused else "[green]●[/] rec"
@@ -290,6 +290,8 @@ class SttopApp(App):
         )
         self.journal_path: Path | None = None
         self._pull_worker = None
+        self._finishing = False
+        self._pipeline_banner = False
         # Resolved before Textual grabs the terminal - the OSC 11 query needs
         # raw mode and a tty that nobody else is reading.
         self._theme = detect_theme(config.ui.theme)
@@ -334,10 +336,10 @@ class SttopApp(App):
             self._fatal(f"{type(exc).__name__}: {exc}")
             return
         self._banner(self._recording_message())
-        self.query_one("#loading-progress", ProgressBar).display = False
+        self._refresh_status()
 
     def _recording_message(self) -> str:
-        return f"writing → {shorten(self.journal_path, self.size.width - 11)}"
+        return f"live transcription → {shorten(self.journal_path, self.size.width - 22)}"
 
     def _banner(self, message: str) -> None:
         self.query_one("#banner", Static).update(f"[dim]{message}[/]")
@@ -371,8 +373,38 @@ class SttopApp(App):
     def _refresh_status(self) -> None:
         status = self.engine.status()
         self.query_one(StatusBar).render_status(status)
+        self.query_one("#loading-progress", ProgressBar).display = bool(status.loading)
+        if self._finishing:
+            message = (
+                f"Recording stopped — {status.loading.lower()}; "
+                f"{status.backlog} speech segments buffered"
+                if status.loading else
+                f"Recording stopped — finishing {status.backlog} queued speech segments…"
+            )
+            self._banner(message)
+            return
+        if status.error:
+            self._banner("Recording stopped — model loading failed; see error below")
+            return
         if status.loading:
-            self._banner(f"{status.loading}… {clock(status.loading_elapsed)} elapsed")
+            state = "Paused" if status.paused else "Recording — buffering speech"
+            prefix = f"{state}. " if status.running else ""
+            self._banner(
+                f"{prefix}{status.loading}… {clock(status.loading_elapsed)} elapsed; "
+                f"{status.backlog} queued"
+            )
+            self._pipeline_banner = True
+        elif (status.catching_up or status.backlog > 3) and not status.paused:
+            self._banner(
+                f"Recording — catching up: {status.backlog} speech segments remaining"
+            )
+            self._pipeline_banner = True
+        elif self._pipeline_banner:
+            self._banner(
+                "paused — audio is discarded while paused"
+                if status.paused else self._recording_message()
+            )
+            self._pipeline_banner = False
 
     # -- actions -----------------------------------------------------------
 
@@ -462,13 +494,15 @@ class SttopApp(App):
     async def action_finish(self, name: str = "") -> None:
         # Awaiting the drain keeps the UI painting while the last few segments
         # finish transcribing, instead of freezing on the way out.
-        self._banner("finishing transcription…")
+        self._finishing = True
+        self._banner("stopping recording; finishing buffered speech…")
+        stopping = asyncio.create_task(self.engine.stop(), name="stop-recording")
         if self._pull_worker is not None:
             # A pull still in flight finishes first: quitting mid-rebase would
             # leave the repo for the close-time sync to untangle.
             with contextlib.suppress(Exception):
                 await self._pull_worker
-        path = await self.engine.stop()
+        path = await stopping
         if path and name:
             path = file_session(path, Path(self.config.sessions_dir), name)
         self.exit(path)

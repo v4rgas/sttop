@@ -108,6 +108,7 @@ class FakeCapture:
         self.label = label
         self.level = 0.0
         self.frames_seen = 0
+        self.on_frame = on_frame
         self.started = False
         self.stopped = False
         FakeCapture.made.append(self)
@@ -291,38 +292,170 @@ def test_model_initialization_overlaps_and_reports_the_remaining_stage(
     asyncio.run(run())
 
 
-def test_quit_during_loading_closes_models_without_starting_capture(
-    tmp_path, monkeypatch
-):
+class BufferedModel(FakeModel):
+    def transcribe(self, pcm):
+        from sttop.stt import Transcript
+
+        return Transcript(text=pcm.decode())
+
+    def label(self, segment, is_mic):
+        return "you" if is_mic else "spk1"
+
+    def take_merges(self):
+        return []
+
+
+@pytest.fixture
+def slow_models(tmp_path, monkeypatch, fake_captures):
     import threading
 
+    config = Config(sessions_dir=str(tmp_path / "sessions"))
+    seen, errors = [], []
+    engine = Engine(config, seen.append, errors.append)
+    source = CaptureSpec("pulse", "default", "mic")
+    monkeypatch.setattr(engine, "_resolve_sources", lambda: (source, None))
     entered, release = threading.Event(), threading.Event()
-    model = FakeModel()
-    engine = Engine(Config(sessions_dir=str(tmp_path)), lambda utterance: None)
-    monkeypatch.setattr(engine, "_resolve_sources", lambda: (None, None))
+    model = BufferedModel()
+    FakeCapture.fails = set()
+    FakeCapture.made = []
 
     def speech(config):
         entered.set()
-        assert release.wait(5)
+        assert release.wait(5), "test did not release model loader"
         return model
 
     monkeypatch.setattr(engine_mod.stt, "build", speech)
-    monkeypatch.setattr(engine_mod.diarize_mod, "build", lambda config: FakeModel())
+    monkeypatch.setattr(engine_mod.diarize_mod, "build", lambda config: BufferedModel())
+    yield engine, entered, release, model, seen, errors
+    release.set()
+
+
+async def until(predicate):
+    async with asyncio.timeout(3):
+        while not predicate():
+            await asyncio.sleep(0.01)
+
+
+def test_capture_starts_before_models_and_buffered_speech_catches_up(slow_models):
+    from sttop.audio.segmenter import Segment
+
+    engine, entered, release, _, seen, errors = slow_models
 
     async def run():
-        boot = asyncio.create_task(engine.start())
-        async with asyncio.timeout(3):
-            while not entered.is_set():
-                await asyncio.sleep(0.01)
+        path = await engine.start("early")
+        try:
+            await until(entered.is_set)
+            assert engine.status().running
+            assert FakeCapture.made[0].started
+            assert engine.transcriber is None
+            engine._queue.put_nowait(Segment("mic", b"opening", 0.0, 1.0))
+            engine._queue.put_nowait(Segment("system", b"reply", 1.0, 2.0))
+            assert engine.status().backlog == 2
+            assert not seen
+            release.set()
+            await until(lambda: len(seen) == 2)
+            engine._queue.put_nowait(Segment("mic", b"live", 2.0, 3.0))
+            await until(lambda: len(seen) == 3)
+            assert [u.text for u in seen] == ["opening", "reply", "live"]
+            assert [u.start for u in seen] == [0.0, 1.0, 2.0]
+            assert not engine.status().loading
+            assert not engine.status().catching_up
+        finally:
+            release.set()
+            await engine.stop()
+        assert "opening" in path.read_text()
+        assert not errors
+
+    asyncio.run(run())
+
+
+def test_quit_stops_capture_then_waits_for_models_and_drains_opening(slow_models):
+    from sttop.audio.segmenter import Segment
+
+    engine, entered, release, model, seen, _ = slow_models
+
+    async def run():
+        await engine.start("early quit")
+        await until(entered.is_set)
+        engine._queue.put_nowait(Segment("mic", b"opening", 0.0, 1.0))
         stopping = asyncio.create_task(engine.stop())
-        await asyncio.sleep(0)
-        assert not stopping.done()
-        release.set()
-        await stopping
-        with pytest.raises(asyncio.CancelledError):
-            await boot
+        try:
+            await until(lambda: FakeCapture.made[0].stopped)
+            assert not engine.status().running
+            assert not stopping.done()
+            elapsed = engine.status().elapsed
+            await asyncio.sleep(0.02)
+            assert engine.status().elapsed == elapsed
+        finally:
+            release.set()
+        path = await stopping
+        assert [u.text for u in seen] == ["opening"]
+        assert "opening" in path.read_text()
         assert model.closed
-        assert engine.transcriber is None
         assert engine.journal is None
+
+    asyncio.run(run())
+
+
+def test_loading_failure_stops_capture_and_reports_untranscribed_audio(
+    slow_models, monkeypatch
+):
+    engine, _, _, _, _, errors = slow_models
+
+    def fail(config):
+        raise RuntimeError("model unavailable")
+
+    monkeypatch.setattr(engine_mod.stt, "build", fail)
+
+    async def run():
+        await engine.start("failed")
+        await until(lambda: bool(errors))
+        assert FakeCapture.made[0].stopped
+        assert not engine.status().running
+        assert not engine.status().loading
+        assert "model unavailable" in engine.status().error
+        assert "buffered speech could not be transcribed" in errors[0]
+        await engine.stop()
+        assert engine.transcriber is None and engine.diarizer is None
+
+    asyncio.run(run())
+
+
+def test_audio_frames_during_loading_are_flushed_and_pause_is_respected(slow_models):
+    from types import SimpleNamespace
+
+    from sttop import FRAME_BYTES
+    from sttop.stt import Transcript
+
+    engine, entered, release, model, seen, _ = slow_models
+    audio = []
+
+    def transcribe(pcm):
+        audio.append(pcm)
+        return Transcript(text="speech")
+
+    model.transcribe = transcribe
+
+    async def run():
+        await engine.start("frames")
+        await until(entered.is_set)
+        engine._segmenters["mic"]._vad = SimpleNamespace(is_speech=lambda *args: True)
+        capture = FakeCapture.made[0]
+        frame = b"\x01\x00" * (FRAME_BYTES // 2)
+        for _ in range(40):
+            capture.on_frame(frame)
+        engine.toggle_pause()  # flush the opening utterance before pausing
+        assert engine.status().backlog == 1
+        for _ in range(40):
+            capture.on_frame(frame)
+        engine.toggle_pause()
+        for _ in range(40):
+            capture.on_frame(frame)
+        assert not seen  # all this audio arrived before the model was ready
+        release.set()
+        await engine.stop()  # flush the still-open final utterance too
+        assert audio == [frame * 40, frame * 40]
+        assert len(seen) == 2
+        assert seen[1].start - seen[0].start == pytest.approx(1.6)
 
     asyncio.run(run())

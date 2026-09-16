@@ -148,6 +148,11 @@ def test_quit_waits_for_a_background_pull():
         app = SttopApp(config)
         app._banner = lambda message: None
         app.exit = lambda result=None: None
+
+        async def stop():
+            events.append("capture stopped")
+
+        app.engine.stop = stop
         app._pull_worker = asyncio.get_running_loop().create_future()
         asyncio.get_running_loop().call_later(
             0.01,
@@ -156,7 +161,7 @@ def test_quit_waits_for_a_background_pull():
         await app.action_quit()
         return events
 
-    assert asyncio.run(scenario()) == ["pull finished"]
+    assert asyncio.run(scenario()) == ["capture stopped", "pull finished"]
 
 
 def test_no_remote_means_no_pull_worker():
@@ -229,5 +234,45 @@ def test_loading_shows_stage_and_progress_without_claiming_to_record(monkeypatch
             release.set()
             await pilot.pause()
             assert not app.query_one("#loading-progress").display
+
+    asyncio.run(run())
+
+
+def test_tui_explains_recording_loading_catchup_and_live_states():
+    async def run():
+        app = SttopApp(Config())
+        async with app.run_test():
+            status = app.engine._status
+            status.running = True
+            status.loading = "Loading speech model"
+            status.backlog = 4
+            app._refresh_status()
+            banner = app.query_one("#banner")
+            assert "Recording — buffering speech" in str(banner.render())
+            assert "Loading speech model" in str(banner.render())
+            assert "rec" in status_line(status, 80)
+            assert app.query_one("#loading-progress").display
+
+            status.loading = ""
+            status.catching_up = True
+            app._refresh_status()
+            assert "catching up: 4" in str(banner.render())
+            assert not app.query_one("#loading-progress").display
+
+            status.backlog = 0
+            status.catching_up = False
+            app._refresh_status()
+            assert "live transcription" in str(banner.render())
+
+            status.loading = "Loading speaker model"
+            status.paused = True
+            app._refresh_status()
+            assert "Paused" in str(banner.render())
+            assert "Recording — buffering" not in str(banner.render())
+
+            app._finishing = True
+            status.running = False
+            app._refresh_status()
+            assert "Recording stopped" in str(banner.render())
 
     asyncio.run(run())

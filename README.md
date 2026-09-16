@@ -12,8 +12,12 @@ uvx sttop
 ![sttop recording a standup](https://raw.githubusercontent.com/v4rgas/sttop/main/docs/sttop.svg)
 
 It runs on Linux and macOS and downloads models on the first run. An animated
-progress bar shows the current loading stage. Later starts reuse cached models
-and load transcription and speaker identification concurrently. You don't need
+progress bar shows the current loading stage. Recording starts as soon as audio
+devices are ready; speech is buffered in memory while models load, then the
+transcript catches up automatically. The TUI shows buffering, catch-up, and live
+transcription states. Quitting stops capture and finishes buffered speech before
+exiting. Later starts reuse cached models and load transcription and speaker
+identification concurrently. You don't need
 API keys. On macOS 13+, give your terminal permission in System Settings →
 Privacy & Security → Screen & System Audio Recording, then restart the terminal
 to capture system audio.

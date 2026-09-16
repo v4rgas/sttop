@@ -79,6 +79,8 @@ class EngineStatus:
     diarizer: str = "diarize off"
     loading: str = ""
     loading_elapsed: float = 0.0
+    error: str = ""
+    catching_up: bool = False
 
 
 class Engine:
@@ -122,13 +124,17 @@ class Engine:
         self._loading_t0 = 0.0
         self._preparing: asyncio.Task | None = None
         self._stopping = False
+        self._model_ready: asyncio.Task | None = None
+        self._error = ""
+        self._inflight = False
+        self._catching_up = False
+        self._ended_elapsed: float | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
     async def prepare(self) -> None:
         """Load independent models concurrently, keeping the UI responsive."""
         if self._preparing is None:
-            self._stopping = False
             self._preparing = asyncio.create_task(self._prepare())
         try:
             await asyncio.shield(self._preparing)
@@ -143,10 +149,8 @@ class Engine:
     async def _prepare(self) -> None:
         loop = asyncio.get_running_loop()
         self._loading_t0 = time.monotonic()
-        self._loading = "Resolving audio devices"
-        self.mic_source, self.sys_source = await loop.run_in_executor(
-            self._executor, self._resolve_sources
-        )
+        if self.mic_source is None:
+            await self._prepare_sources()
         pending = {"speech model", "speaker model"}
 
         def refresh() -> None:
@@ -172,7 +176,15 @@ class Engine:
         for result in results:
             if isinstance(result, BaseException):
                 raise result
-        self._loading = "Starting audio capture"
+        self._loading = ""
+
+    async def _prepare_sources(self) -> None:
+        self._loading_t0 = time.monotonic()
+        self._loading = "Resolving audio devices"
+        loop = asyncio.get_running_loop()
+        self.mic_source, self.sys_source = await loop.run_in_executor(
+            self._executor, self._resolve_sources
+        )
 
     def _resolve_sources(
         self,
@@ -195,21 +207,25 @@ class Engine:
     async def start(self, title: str | None = None) -> Path:
         if self._running:
             raise RuntimeError("engine already running")
-        if self.transcriber is None:
-            await self.prepare()
+        self._stopping = False
+        self._error = ""
+        if self.mic_source is None:
+            await self._prepare_sources()
         if self._stopping:
             raise asyncio.CancelledError
+        self._loading = "Starting audio capture"
 
         self.journal = Journal.create(
             Path(self.config.sessions_dir),
             title,
             mic_source=str(self.mic_source),
             sys_source=str(self.sys_source) if self.sys_source else "unavailable",
-            backend=self.transcriber.describe,
+            backend=(self.transcriber.describe if self.transcriber else
+                     f"parakeet {self.config.stt.model or stt.DEFAULT_MODEL}"),
             cipher=self._cipher,
         )
         self._t0 = time.monotonic()
-        self._running = True
+        self._ended_elapsed = None
         if self.config.pipe:
             # stdout to nowhere: the child writing to the terminal would paint
             # over the UI. stderr is already the session log.
@@ -231,6 +247,7 @@ class Engine:
             segmenter = Segmenter(
                 label, self.config.vad, self._queue.put_nowait, clock=self._session_clock
             )
+            segmenter.paused = self._paused
             capture = _capture_for(source)(
                 label,
                 source,
@@ -256,26 +273,38 @@ class Engine:
             # is not later stopped, metered, or fed by a paused segmenter.
             self._segmenters[label] = segmenter
             self._captures.append(capture)
+            self._running = True
 
-        self._consumer = asyncio.create_task(self._consume(), name="transcribe")
-        self._loading = ""
+        # Audio is already feeding the queue before any model imports/downloads.
+        if self.transcriber is None or self.diarizer is None:
+            self._loading = "Loading speech + speaker models"
+            self._model_ready = asyncio.create_task(self.prepare(), name="load-models")
+        else:
+            self._loading = ""
+        self._consumer = asyncio.create_task(self._load_and_consume(), name="transcribe")
         return self.journal.path
 
-    async def stop(self, drain_timeout: float = 30.0) -> Path | None:
+    async def stop(self, drain_timeout: float | None = None) -> Path | None:
         """Stop capture, then finish transcribing whatever is still queued.
 
         Safe to call at any point in the lifecycle, and always releases: a run
         that failed *during* start() has still loaded the models and started
         the executor thread, and those must go back whether or not any audio
         was ever captured.
+
+        By default finish every buffered segment, including a first-download
+        backlog; a fixed 30-second deadline can silently lose the opening.
         """
         self._stopping = True
-        if self._preparing is not None:
+        # Freeze the recording immediately, even if models are still loading.
+        await self._stop_capture()
+        if self._model_ready is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.shield(self._model_ready)
+        elif self._preparing is not None:
             with contextlib.suppress(Exception):
                 await asyncio.shield(self._preparing)
-        if self._running:
-            self._running = False
-            await self._drain(drain_timeout)
+        await self._drain(drain_timeout)
         await self._close_pipe()
         return self._release()
 
@@ -307,12 +336,16 @@ class Engine:
                 pipe.kill()
             await pipe.wait()
 
-    async def _drain(self, timeout: float) -> None:
+    async def _stop_capture(self) -> None:
+        self._running = False
         for capture in self._captures:
             await capture.stop()
         for segmenter in self._segmenters.values():
             segmenter.close()  # flush any utterance still open
+        if self._t0 and self._ended_elapsed is None:
+            self._ended_elapsed = time.monotonic() - self._t0
 
+    async def _drain(self, timeout: float | None) -> None:
         self._queue.put_nowait(None)  # sentinel: drain, then finish
         if self._consumer is not None:
             try:
@@ -346,6 +379,10 @@ class Engine:
         self._captures.clear()
         self._segmenters.clear()
         self._loading = ""
+        self._model_ready = None
+        self._queue = asyncio.Queue()
+        self._inflight = False
+        self._catching_up = False
         return path
 
     def toggle_pause(self) -> bool:
@@ -369,7 +406,7 @@ class Engine:
         before prepare(), mid-session, or after stop()."""
         return EngineStatus(
             elapsed=self._session_clock() if self._t0 else 0.0,
-            backlog=self._queue.qsize(),
+            backlog=self._queue.qsize() + int(self._inflight),
             levels={c.label: c.level for c in self._captures},
             paused=self._paused,
             running=self._running,
@@ -378,6 +415,8 @@ class Engine:
             backend=self.transcriber.describe if self.transcriber else "no backend",
             diarizer=self.diarizer.describe if self.diarizer else "diarize off",
             loading=self._loading,
+            error=self._error,
+            catching_up=self._catching_up,
             loading_elapsed=(time.monotonic() - self._loading_t0)
             if self._loading else 0.0,
         )
@@ -385,12 +424,31 @@ class Engine:
     # -- internals ---------------------------------------------------------
 
     def _session_clock(self) -> float:
-        return time.monotonic() - self._t0
+        return (
+            self._ended_elapsed if self._ended_elapsed is not None
+            else time.monotonic() - self._t0
+        )
 
     def _wav_path(self, label: str) -> Path | None:
         if not self.config.audio.save_wav or self.journal is None:
             return None
         return Path(self.config.audio_dir) / f"{self.journal.path.stem}-{label}.wav"
+
+    async def _load_and_consume(self) -> None:
+        try:
+            if self._model_ready is not None:
+                await asyncio.shield(self._model_ready)
+        except Exception as exc:
+            self._error = f"Model loading failed: {type(exc).__name__}: {exc}"
+            self._loading = ""
+            await self._stop_capture()
+            self._on_error(
+                f"{self._error}. Recording stopped; buffered speech could not be "
+                "transcribed."
+            )
+            return
+        self._catching_up = not self._queue.empty()
+        await self._consume()
 
     async def _consume(self) -> None:
         loop = asyncio.get_running_loop()
@@ -398,6 +456,7 @@ class Engine:
             segment = await self._queue.get()
             if segment is None:
                 return
+            self._inflight = True
             try:
                 utterance = await loop.run_in_executor(
                     self._executor, self._transcribe, segment
@@ -405,6 +464,10 @@ class Engine:
             except Exception as exc:  # one bad segment must not end the run
                 self._on_error(f"[stt] {type(exc).__name__}: {exc}")
                 continue
+            finally:
+                self._inflight = False
+                if self._queue.empty():
+                    self._catching_up = False
             if utterance is None:
                 continue
             # Back on the loop: writing and notifying are cheap and ordered.
