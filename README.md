@@ -90,9 +90,6 @@ repositories is loaded. Custom `--model` overrides select your own source and
 are not covered by these built-in revision pins. Python dependencies are
 resolved with artifact hashes in `uv.lock` for `uv sync --locked` installs.
 
-Use `--pipe 'your-command'` to stream utterances and speaker renames as JSON lines
-to another program's stdin.
-
 ## Encrypted backup
 
 ```bash
