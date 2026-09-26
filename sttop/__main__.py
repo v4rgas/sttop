@@ -75,6 +75,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="session filename or a substring of one; default: the latest",
     )
 
+    follow = command(
+        "follow", "stream a live transcript's new lines in batches, e.g. to an agent"
+    )
+    follow.add_argument(
+        "session",
+        nargs="?",
+        help="session filename or a substring of one; default: the one "
+        "recording now, waiting for it to start",
+    )
+    follow.add_argument(
+        "--every",
+        type=float,
+        default=20.0,
+        metavar="SECONDS",
+        help="how often to print what's new (default: 20)",
+    )
+
     command(
         "sync",
         "push sessions to a private repo, encrypted; first run sets everything up",
@@ -325,24 +342,30 @@ def _vault_cipher(config: Config):
     return cipher
 
 
-def cmd_read(config: Config, args) -> int:
-    from . import crypto
+def _find_session(directory: Path, session: str | None) -> Path | None:
+    """A path, a substring of a session's name, or None for the latest -
+    saying so on stderr when nothing matches."""
     from .journal import list_sessions
 
+    if session and Path(session).is_file():
+        return Path(session)
+    paths = list_sessions(directory, limit=1000)
+    if session:
+        paths = [p for p in paths if session in p.name]
+    if not paths:
+        what = f"no session matching {session!r}" if session else "no sessions yet"
+        print(f"{what} in {directory}", file=sys.stderr)
+        return None
+    return paths[0]  # newest first, so a bare `sttop read` opens the latest
+
+
+def cmd_read(config: Config, args) -> int:
+    from . import crypto
+
     directory = Path(config.sessions_dir)
-    if args.session and Path(args.session).is_file():
-        path = Path(args.session)
-    else:
-        paths = list_sessions(directory, limit=1000)
-        if args.session:
-            paths = [p for p in paths if args.session in p.name]
-        if not paths:
-            what = f"no session matching {args.session!r}" if args.session else (
-                "no sessions yet"
-            )
-            print(f"{what} in {directory}", file=sys.stderr)
-            return 1
-        path = paths[0]  # newest first, so a bare `sttop read` opens the latest
+    path = _find_session(directory, args.session)
+    if path is None:
+        return 1
 
     if crypto.is_encrypted(path):
         # The remembered key first (sync mode: no prompt, ever); the
@@ -377,6 +400,66 @@ def _display(text: str) -> None:
         except OSError:
             pass  # no pager on this machine; printing still works
     print(text, end="")
+
+
+def cmd_follow(config: Config, args) -> int:
+    """Print a session's utterances as they land, in batches, until it ends.
+
+    Only stdout carries transcript, flushed per batch, so a watcher reading
+    it line by line sees each batch as one event; status goes to stderr.
+    """
+    from . import crypto
+    from .follow import follow, live_session
+
+    directory = Path(config.sessions_dir)
+    cipher = None
+
+    def read(path: Path) -> str | None:
+        nonlocal cipher
+        try:
+            if not crypto.is_encrypted(path):
+                return path.read_text(encoding="utf-8")
+            if cipher is None:
+                # Once, not per batch: scrypt is slow and the prompt is a
+                # one-time cost. open_vault checks the passphrase up front -
+                # and would mint a vault if there were none, hence the guard.
+                if not crypto.vault_exists(directory):
+                    raise crypto.VaultError(f"no vault in {_tilde(directory)}")
+                cipher = crypto.load_key(directory) or crypto.open_vault(
+                    directory, _passphrase()
+                )
+            return crypto.decrypt_session(path, cipher)
+        except FileNotFoundError:
+            return None
+        except crypto.VaultError:
+            if cipher is None:
+                raise  # a wrong passphrase, not a half-written line
+            return None  # caught mid-write; the next batch has it whole
+
+    def emit(text: str) -> None:
+        print(text, flush=True)
+
+    try:
+        if args.session:
+            path = _find_session(directory, args.session)
+            if path is None:
+                return 1
+        else:
+            path = live_session(
+                directory,
+                read,
+                waiting=lambda: print(
+                    f"waiting for a recording to start in {_tilde(directory)}",
+                    file=sys.stderr,
+                ),
+            )
+        follow(path, directory, read, emit, every=max(1.0, args.every))
+    except crypto.VaultError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        pass
+    return 0
 
 
 def _sync(config: Config) -> str:
@@ -520,8 +603,8 @@ def _sync_after_record(config: Config) -> None:
 
 
 COMMANDS = {
-    "record", "devices", "doctor", "sessions", "read", "sync", "theme", "config",
-    "ls",
+    "record", "devices", "doctor", "sessions", "read", "follow", "sync", "theme",
+    "config", "ls",
 }
 
 
@@ -556,6 +639,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_sessions(config)
     if args.command == "read":
         return cmd_read(config, args)
+    if args.command == "follow":
+        return cmd_follow(config, args)
     if args.command == "sync":
         return cmd_sync(config, args.config)
     if args.command == "theme":

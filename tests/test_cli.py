@@ -51,6 +51,7 @@ def test_subcommands_are_left_alone():
     assert parse("devices", "--test").command == "devices"
     assert parse("sessions").command == "sessions"
     assert parse("read", "standup").command == "read"
+    assert parse("follow").command == "follow"
     assert parse("sync").command == "sync"
 
 
@@ -394,3 +395,46 @@ def test_a_run_with_nothing_to_show_surfaces_the_log(monkeypatch, tmp_path, caps
 
     assert run_record(monkeypatch, tmp_path, app_run) == 0
     assert "libc++abi: terminating" in capsys.readouterr().err
+
+
+# -- follow ------------------------------------------------------------------
+
+
+def test_follow_prints_a_finished_session_and_exits(tmp_path, capsys):
+    from sttop.journal import Journal, Utterance
+
+    sessions = tmp_path / "sessions"
+    journal = Journal.create(sessions, "weekly")
+    journal.append(Utterance("mic", "you", 0.0, 1.0, "mover la tarjeta"))
+    journal.close(1.0)
+
+    assert main(["-c", config_for(tmp_path, sessions), "follow", "weekly"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[1] == "- `00:00` **you** — mover la tarjeta"
+    assert out[2].startswith("[sttop] session ended")
+
+
+def test_follow_decrypts_a_sealed_session(tmp_path, capsys, monkeypatch):
+    from sttop.crypto import open_vault
+    from sttop.journal import Journal, Utterance
+
+    sessions = tmp_path / "sessions"
+    journal = Journal.create(sessions, "weekly", cipher=open_vault(sessions, "pw"))
+    journal.append(Utterance("mic", "you", 0.0, 1.0, "hola"))
+    journal.close(1.0)
+
+    monkeypatch.setenv("STTOP_PASSPHRASE", "pw")
+    assert main(["-c", config_for(tmp_path, sessions), "follow", "weekly"]) == 0
+    assert "**you** — hola" in capsys.readouterr().out
+
+
+def test_follow_with_a_wrong_passphrase_fails_politely(tmp_path, capsys, monkeypatch):
+    from sttop.crypto import open_vault
+    from sttop.journal import Journal
+
+    sessions = tmp_path / "sessions"
+    Journal.create(sessions, "weekly", cipher=open_vault(sessions, "right")).close(1.0)
+
+    monkeypatch.setenv("STTOP_PASSPHRASE", "wrong")
+    assert main(["-c", config_for(tmp_path, sessions), "follow", "weekly"]) == 1
+    assert "wrong passphrase" in capsys.readouterr().err

@@ -46,6 +46,7 @@ uvx sttop -t "standup"               # name the session
 uvx sttop ls                         # list transcripts in a folder tree
 uvx sttop read                       # open the latest transcript
 uvx sttop read standup               # find a session by name
+uvx sttop follow                     # stream the live transcript, e.g. to an agent
 uvx sttop devices --test             # check audio sources
 uvx sttop doctor                     # troubleshoot setup
 uvx sttop --help                     # all commands and options
