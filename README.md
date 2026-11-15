@@ -25,12 +25,6 @@ to capture system audio.
 <details>
 <summary>Installation options</summary>
 
-On Linux, use CPU-only PyTorch wheels for a smaller download:
-
-```bash
-uvx --index https://download.pytorch.org/whl/cpu sttop
-```
-
 To install permanently:
 
 ```bash
@@ -90,6 +84,13 @@ the MLX conversion is published by `mlx-community`. No Python code from model
 repositories is loaded. Custom `--model` overrides select your own source and
 are not covered by these built-in revision pins. Python dependencies are
 resolved with artifact hashes in `uv.lock` for `uv sync --locked` installs.
+
+Speaker labels come from NVIDIA's Nemotron 3 Diarization, an end-to-end model
+that tracks up to 8 remote speakers. It runs on CPU through a pinned community
+ONNX export, `joosthel/Nemotron-3-Diarization-ONNX`. On the 16 AMI test meetings,
+it mislabels 11% of speech time, down from 25% with the previous ECAPA clustering.
+It finds 4 speakers per 4-person meeting on average. The older backend is still
+available: install `sttop[ecapa]` and set `backend = "ecapa"` under `[diarize]`.
 
 ## Encrypted backup
 

@@ -4,10 +4,16 @@ Two sources of truth, in order of reliability:
 
 1. Which stream the audio came from. Anything on the microphone is you; that
    needs no model and is never wrong.
-2. Voice embeddings, for splitting the *system* stream into the individual
-   remote participants. ECAPA-TDNN embeddings are clustered online: each new
-   utterance is matched against running centroids by cosine similarity, and
-   opens a new speaker when nothing is close enough.
+2. A speaker model, for splitting the *system* stream into the individual
+   remote participants. Two backends:
+
+   - `NemotronDiarizer` (default): an end-to-end diarizer that keeps its own
+     memory of who has spoken and answers "which of up to 8 speakers is this"
+     directly. See `sttop/nemotron.py`.
+   - `Diarizer` ("ecapa"): ECAPA-TDNN embeddings clustered online: each new
+     utterance is matched against running centroids by cosine similarity, and
+     opens a new speaker when nothing is close enough. The rest of this
+     docstring is about this backend.
 
 Online clustering assigns labels as audio arrives, which is the only way to
 show a name next to a line the moment it is transcribed. The cost is that the
@@ -354,6 +360,77 @@ class Diarizer:
         self._encoder = None
 
 
+class NemotronDiarizer:
+    """End-to-end diarization: Nemotron 3 decides who spoke, no clustering.
+
+    Every system-stream utterance goes through the model in order, and the
+    label is whichever speaker channel carries the most probability over it.
+    Channels are numbered by first arrival and the model keeps them stable
+    across the session, so labels never need rewriting.
+    """
+
+    #: Below this mean probability for the strongest speaker, the model is
+    #: saying nobody it knows is talking - laughter, a door, keyboard. The
+    #: utterance falls back to whoever was just speaking.
+    SPEECH_FLOOR = 0.125
+
+    def __init__(self, config: DiarizeConfig, stream=None) -> None:
+        if stream is None:
+            from .nemotron import NemotronStream, fetch
+
+            # One thread: transcription is the latency that matters, and an
+            # utterance-sized step is small enough not to need more.
+            stream = NemotronStream.load(fetch(), threads=1)
+
+        self.config = config
+        self._lock = threading.Lock()
+        self._stream = stream
+        self._seen: set[str] = set()
+        self._pushed_until: float | None = None
+        self._last_label: str | None = None
+        self._last_end = 0.0
+        self.describe = "nemotron-3"
+
+    @property
+    def speaker_count(self) -> int:
+        return len(self._seen)
+
+    def label(self, segment: Segment, is_mic: bool) -> str:
+        if is_mic:
+            return SELF_LABEL
+        audio = pcm_to_float32(segment.pcm)
+        with self._lock:
+            previous = self._pushed_until
+            gap = 0.0 if previous is None else segment.start - previous
+            self._pushed_until = segment.end
+            try:
+                probs = self._stream.push(audio, gap)
+            except Exception:
+                return UNKNOWN_LABEL
+            mass = probs.mean(axis=0) if len(probs) else None
+            if mass is not None and self.config.max_speakers > 0:
+                # Channels are in arrival order, so "expect N voices" keeps the
+                # first N and lets the nearest of them take any later arrival.
+                mass = mass[: self.config.max_speakers]
+            if mass is None or mass.max() < self.SPEECH_FLOOR:
+                return self._recent_label(segment)
+            label = speaker_name(int(mass.argmax()))
+            self._seen.add(label)
+            self._last_label, self._last_end = label, segment.end
+            return label
+
+    def _recent_label(self, segment: Segment) -> str:
+        if self._last_label and segment.start - self._last_end < 5.0:
+            return self._last_label
+        return UNKNOWN_LABEL
+
+    def take_merges(self) -> list[Merge]:
+        return []
+
+    def close(self) -> None:
+        self._stream = None
+
+
 def _normalize(vector: np.ndarray) -> np.ndarray:
     norm = np.linalg.norm(vector)
     return vector / norm if norm else vector
@@ -377,9 +454,14 @@ def build(config: DiarizeConfig) -> SpeakerLabeler:
     """Return a diarizer, degrading to NullDiarizer rather than failing the run."""
     if not config.enabled:
         return NullDiarizer("disabled")
+    backends = {"nemotron": NemotronDiarizer, "ecapa": Diarizer}
+    if config.backend not in backends:
+        return NullDiarizer(f"unknown backend {config.backend!r}")
     try:
-        return Diarizer(config)
+        return backends[config.backend](config)
     except ImportError:
+        if config.backend == "ecapa":
+            return NullDiarizer("install sttop[ecapa]")
         return NullDiarizer("reinstall sttop")
     except Exception as exc:  # model download failure, corrupt cache, ...
         return NullDiarizer(str(exc).splitlines()[0][:40])

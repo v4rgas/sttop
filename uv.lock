@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.12' and sys_platform == 'linux'",
@@ -1875,7 +1875,7 @@ wheels = [
 
 [[package]]
 name = "sttop"
-version = "0.11.0"
+version = "0.12.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -1887,15 +1887,8 @@ dependencies = [
     { name = "platformdirs" },
     { name = "pyobjc-framework-coremedia", marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-screencapturekit", marker = "sys_platform == 'darwin'" },
-    { name = "speechbrain" },
     { name = "static-ffmpeg" },
     { name = "textual" },
-    { name = "torch", version = "2.13.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
-    { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'arm64' and sys_platform == 'darwin') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
-    { name = "torch", version = "2.13.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux'" },
-    { name = "torchaudio", version = "2.11.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
-    { name = "torchaudio", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'arm64' and sys_platform == 'darwin') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
-    { name = "torchaudio", version = "2.11.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux'" },
     { name = "webrtcvad-wheels" },
 ]
 
@@ -1903,6 +1896,15 @@ dependencies = [
 dev = [
     { name = "pytest" },
     { name = "ruff" },
+]
+ecapa = [
+    { name = "speechbrain" },
+    { name = "torch", version = "2.13.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
+    { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'arm64' and sys_platform == 'darwin') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "torch", version = "2.13.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux'" },
+    { name = "torchaudio", version = "2.11.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
+    { name = "torchaudio", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'arm64' and sys_platform == 'darwin') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "torchaudio", version = "2.11.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux'" },
 ]
 
 [package.metadata]
@@ -1917,18 +1919,18 @@ requires-dist = [
     { name = "pyobjc-framework-screencapturekit", marker = "sys_platform == 'darwin'", specifier = ">=10.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
-    { name = "speechbrain", specifier = ">=1.0" },
+    { name = "speechbrain", marker = "extra == 'ecapa'", specifier = ">=1.0" },
     { name = "static-ffmpeg", specifier = ">=2.7" },
     { name = "textual", specifier = ">=0.80" },
-    { name = "torch", marker = "(platform_machine != 'arm64' and sys_platform == 'darwin') or (sys_platform != 'darwin' and sys_platform != 'linux')", specifier = ">=2.2" },
-    { name = "torch", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "torchaudio", marker = "(platform_machine != 'arm64' and sys_platform == 'darwin') or (sys_platform != 'darwin' and sys_platform != 'linux')", specifier = ">=2.2" },
-    { name = "torchaudio", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "torchaudio", marker = "sys_platform == 'linux'", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torch", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'ecapa'", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torch", marker = "(platform_machine != 'arm64' and sys_platform == 'darwin' and extra == 'ecapa') or (sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'ecapa')", specifier = ">=2.2" },
+    { name = "torch", marker = "sys_platform == 'linux' and extra == 'ecapa'", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torchaudio", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'ecapa'", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torchaudio", marker = "(platform_machine != 'arm64' and sys_platform == 'darwin' and extra == 'ecapa') or (sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'ecapa')", specifier = ">=2.2" },
+    { name = "torchaudio", marker = "sys_platform == 'linux' and extra == 'ecapa'", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu" },
     { name = "webrtcvad-wheels", specifier = ">=2.0.14" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["ecapa", "dev"]
 
 [[package]]
 name = "sympy"

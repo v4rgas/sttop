@@ -53,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--speakers",
         type=int,
         metavar="N",
-        help="how many voices to expect besides your own; caps the clustering",
+        help="how many voices to expect besides your own; caps the speaker labels",
     )
     record.add_argument("--save-wav", action="store_true", help="keep the raw audio")
 

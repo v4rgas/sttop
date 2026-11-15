@@ -71,7 +71,14 @@ class UiConfig:
 @dataclass
 class DiarizeConfig:
     enabled: bool = True
-    #: Cosine similarity above which a voice is considered a known speaker.
+    #: "nemotron" (default): NVIDIA Nemotron 3 Diarization, an end-to-end model
+    #: that tracks up to 8 remote speakers on its own; of the settings below
+    #: only max_speakers applies to it. On the AMI meeting benchmark it
+    #: confuses speakers less than half as often as "ecapa". "ecapa": voice
+    #: embeddings clustered with the thresholds below, no speaker limit; needs
+    #: `uv tool install "sttop[ecapa]"`.
+    backend: str = "nemotron"
+    #: ecapa only. Cosine similarity above which a voice is a known speaker.
     #: ECAPA-TDNN's verification operating point sits near 0.3, not the 0.5 a
     #: cosine "looks like" it should use: same-speaker pairs across changing
     #: mic gain, distance and codec routinely land in the 0.35-0.5 band, and a
@@ -88,7 +95,7 @@ class DiarizeConfig:
     #: recognising a known one, and "Cool." is not evidence for it - a
     #: two-word segment's embedding is mostly noise, and matches nobody.
     new_speaker_min_s: float = 4.0
-    #: Hard cap on clustered voices, for when you know who is in the room.
+    #: Hard cap on remote voices, for when you know who is in the room.
     #: 0 means no cap. At the cap the nearest speaker always wins.
     max_speakers: int = 0
     #: Long segments are embedded as overlapping windows of this length and
