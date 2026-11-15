@@ -1,15 +1,18 @@
 """Lifecycle checks that need no audio hardware and no models."""
 
 import asyncio
+import threading
 from pathlib import Path
 
 import pytest
 
 from sttop import engine as engine_mod
 from sttop.audio.devices import AudioError, CaptureSpec
+from sttop.audio.segmenter import Segment
 from sttop.config import Config
 from sttop.engine import Engine
 from sttop.journal import Journal, Utterance
+from sttop.stt import Transcript
 
 
 class FakeModel:
@@ -420,3 +423,26 @@ def test_audio_frames_during_loading_are_flushed_and_pause_is_respected(slow_mod
         assert seen[1].start - seen[0].start == pytest.approx(1.6)
 
     asyncio.run(run())
+
+
+def test_speakers_are_labelled_while_the_text_is_transcribed(tmp_path):
+    """A line should wait for the slower model, not both in turn. Each fake
+    model here blocks until it sees the other one running, so doing them one
+    after the other times out instead of passing."""
+    engine, transcriber, diarizer = prepared_engine(tmp_path)
+    labelling, transcribing = threading.Event(), threading.Event()
+
+    def label(segment, is_mic):
+        labelling.set()
+        assert transcribing.wait(5), "labelling waited for transcription"
+        return "spk1"
+
+    def transcribe(pcm):
+        transcribing.set()
+        assert labelling.wait(5), "transcription waited for labelling"
+        return Transcript(text="hello")
+
+    diarizer.label, transcriber.transcribe = label, transcribe
+    utterance = engine._transcribe(Segment("system", b"\0\0" * 320, 0.0, 0.02))
+    assert utterance is not None and utterance.speaker == "spk1"
+    asyncio.run(engine.stop())

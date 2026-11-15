@@ -378,9 +378,10 @@ class NemotronDiarizer:
         if stream is None:
             from .nemotron import NemotronStream, fetch
 
-            # One thread: transcription is the latency that matters, and an
-            # utterance-sized step is small enough not to need more.
-            stream = NemotronStream.load(fetch(), threads=1)
+            # Runs beside transcription, so it only has to keep up with it:
+            # two threads take a step from ~670 ms to ~380 ms, under Parakeet's
+            # time for the same line, without crowding it off the CPU.
+            stream = NemotronStream.load(fetch(), threads=2)
 
         self.config = config
         self._lock = threading.Lock()

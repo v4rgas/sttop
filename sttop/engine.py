@@ -8,14 +8,19 @@ Concurrency model during recording - one thread boundary, and it is the model:
         |
   consume task        asyncio: awaits the executor, appends, notifies the UI
         |
-  ThreadPoolExecutor(max_workers=1)   the only thread: transcribe + embed
+  ThreadPoolExecutor(max_workers=1)   transcribe
+        |  hands each system-stream segment to
+  ThreadPoolExecutor(max_workers=1)   speaker labels, alongside transcription
 
 Everything except the model runs on the event loop, so the UI needs no
 cross-thread marshalling and shutdown is ordinary task cancellation. The
 executor is deliberately single-threaded: transcription is CPU-bound and
 already internally parallel, so a second worker would only thrash the cache -
-and serialising it keeps utterances in the order they were spoken. During
-startup only, independent speech and speaker models initialize concurrently.
+and serialising it keeps utterances in the order they were spoken. Speaker
+labelling gets its own single worker so a line waits for the slower of the two
+models rather than both in turn; it is fed in the same order, which the
+diarizer needs. During startup, speech and speaker models also initialize
+concurrently.
 
 When transcription falls behind, the queue absorbs the lag and `backlog`
 reports it rather than dropping audio.
@@ -114,6 +119,7 @@ class Engine:
         self._queue: asyncio.Queue[Segment | None] = asyncio.Queue()
         self._consumer: asyncio.Task | None = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
+        self._speakers = ThreadPoolExecutor(max_workers=1, thread_name_prefix="speakers")
         self._t0: float = 0.0
         self._paused = False
         self._running = False
@@ -321,6 +327,10 @@ class Engine:
         path = None
         if self.journal is not None:
             path = self.journal.close(self._session_clock())
+        # A label for a segment that turned out to be noise may still be
+        # running; let it finish before its model is closed under it.
+        self._speakers.shutdown(wait=True)
+        self._speakers = ThreadPoolExecutor(max_workers=1, thread_name_prefix="speakers")
         for resource in (self.transcriber, self.diarizer):
             if resource is not None:
                 resource.close()
@@ -447,13 +457,17 @@ class Engine:
         """The only code that runs off the event loop."""
         assert self.transcriber is not None
 
+        # Every system segment is labelled, noise included, while the text is
+        # being transcribed: the diarizer reads them as one ordered timeline.
+        is_mic = segment.source == MIC
+        speaker = self._speakers.submit(self.diarizer.label, segment, is_mic=is_mic)
         transcript = self.transcriber.transcribe(segment.pcm)
         if not transcript.text:
             return None  # VAD fired on noise, not speech
 
         return Utterance(
             source=segment.source,
-            speaker=self.diarizer.label(segment, is_mic=segment.source == MIC),
+            speaker=speaker.result(),
             start=segment.start,
             end=segment.end,
             text=transcript.text,
