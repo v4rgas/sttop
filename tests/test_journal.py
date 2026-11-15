@@ -18,7 +18,7 @@ def test_slugify():
 
 
 def test_lines_are_readable_before_close(tmp_path):
-    journal = Journal.create(tmp_path, "demo", backend="test")
+    journal = Journal.create(tmp_path, "demo")
     journal.append(utterance("you", 3.0, "hello"))
 
     # Flushed per line: the file is complete without closing it.
@@ -92,7 +92,7 @@ def test_list_sessions_on_a_missing_directory(tmp_path):
 def test_snapshot_is_the_file_so_far(tmp_path):
     """What `y` copies mid-meeting must equal what is on disk, byte for byte -
     otherwise the clipboard and the transcript disagree about the meeting."""
-    journal = Journal.create(tmp_path, "demo", backend="test")
+    journal = Journal.create(tmp_path, "demo")
     journal.append(utterance("you", 0.0, "hello"))
     journal.append(utterance("spk1", 1.0, "hi"))
     assert journal.snapshot() == journal.path.read_text()

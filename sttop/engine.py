@@ -215,10 +215,6 @@ class Engine:
         self.journal = Journal.create(
             Path(self.config.sessions_dir),
             title,
-            mic_source=str(self.mic_source),
-            sys_source=str(self.sys_source) if self.sys_source else "unavailable",
-            backend=(self.transcriber.describe if self.transcriber else
-                     f"parakeet {self.config.stt.model or stt.DEFAULT_MODEL}"),
             cipher=self._cipher,
         )
         self._t0 = time.monotonic()

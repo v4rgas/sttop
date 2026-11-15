@@ -70,9 +70,6 @@ class Journal:
         directory: Path,
         title: str | None = None,
         *,
-        mic_source: str = "",
-        sys_source: str = "",
-        backend: str = "",
         cipher: Cipher | None = None,
     ) -> Journal:
         directory.mkdir(parents=True, exist_ok=True)
@@ -88,19 +85,16 @@ class Journal:
             suffix += 1
 
         journal = cls(path, title, cipher)
-        journal._open(mic_source, sys_source, backend)
+        journal._open()
         return journal
 
-    def _open(self, mic_source: str, sys_source: str, backend: str) -> None:
+    def _open(self) -> None:
         self._file = self.path.open("w", encoding="utf-8")
         if self._cipher is not None:
             self._file.write(self._cipher.header)
         self._write(
             f"# {self.title}\n\n"
-            f"- started: {self.started:%Y-%m-%d %H:%M:%S %Z}\n"
-            f"- mic: `{mic_source}`\n"
-            f"- system: `{sys_source}`\n"
-            f"- backend: `{backend}`\n\n"
+            f"- started: {self.started:%Y-%m-%d %H:%M:%S %Z}\n\n"
             "## Transcript\n\n"
         )
 

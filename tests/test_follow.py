@@ -15,7 +15,7 @@ def say(journal, text, speaker="you", at=0.0):
 
 def test_only_utterance_lines_count():
     text = (
-        "# weekly\n\n- started: 2026-09-26 10:00:00\n- mic: `m`\n\n## Transcript\n\n"
+        "# weekly\n\n- started: 2026-09-26 10:00:00\n\n## Transcript\n\n"
         "- `00:01` **you** — hola\n\n- `01:02:03` **speaker 1** — chao\n"
         "\n---\n\n- ended: 2026-09-26 11:00:00\n- utterances: 2\n"
     )
@@ -100,7 +100,7 @@ def test_waits_for_a_recording_to_start(tmp_path):
     def tick(_seconds):
         # A new minute, so the newer session sorts first.
         started.append(Journal(tmp_path / "2099-01-01-0900-weekly.md", "weekly"))
-        started[0]._open("", "", "")
+        started[0]._open()
 
     path = live_session(tmp_path, read, waiting=lambda: waited.append(1), sleep=tick)
     assert path.name == "2099-01-01-0900-weekly.md"
