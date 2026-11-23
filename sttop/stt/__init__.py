@@ -11,10 +11,13 @@ from .base import Transcriber, Transcript, pcm_to_float32
 
 __all__ = ["DEFAULT_MODEL", "Transcriber", "Transcript", "build", "pcm_to_float32"]
 
-DEFAULT_MODEL = "nemo-parakeet-tdt-0.6b-v3"
+DEFAULT_MODEL = "parakeet-ultra"
 MLX_MODELS = {
-    f"nemo-parakeet-tdt-0.6b-{version}": f"mlx-community/parakeet-tdt-0.6b-{version}"
-    for version in ("v2", "v3")
+    "parakeet-ultra": "selcukkubur/parakeet-ultra-mlx",
+    **{
+        f"nemo-parakeet-tdt-0.6b-{version}": f"mlx-community/parakeet-tdt-0.6b-{version}"
+        for version in ("v2", "v3")
+    },
 }
 
 

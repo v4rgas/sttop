@@ -52,10 +52,30 @@ def test_parakeet_does_not_auto_select_coreml_during_loading(monkeypatch):
     monkeypatch.setattr("sttop.nativelog.quiet_onnxruntime", lambda: None)
     monkeypatch.setattr("sttop.stt.parakeet.snapshot", lambda *args: "/cached/onnx")
     transcriber = ParakeetTranscriber(SttConfig(model=stt.DEFAULT_MODEL))
-    assert loaded == [(stt.DEFAULT_MODEL, {
-        "providers": ["CPUExecutionProvider"], "path": "/cached/onnx"
-    })]
+    [(model, kwargs)] = loaded
+    assert model == "nemo-parakeet-tdt-0.6b-v3"  # Ultra loads as the v3 graph
+    assert kwargs["providers"] == ["CPUExecutionProvider"]
+    assert kwargs["path"] == "/cached/onnx"
     assert "cpu" in transcriber.describe
+
+
+def test_parakeet_leaves_room_for_the_speaker_model(monkeypatch):
+    """Both models share the CPU: neither may claim every core or spin."""
+    import sys
+    from types import SimpleNamespace
+
+    from sttop.stt import parakeet
+
+    loaded = []
+    monkeypatch.setitem(sys.modules, "onnx_asr", SimpleNamespace(
+        load_model=lambda model, **kwargs: loaded.append(kwargs)
+    ))
+    monkeypatch.setattr("sttop.nativelog.quiet_onnxruntime", lambda: None)
+    monkeypatch.setattr("sttop.stt.parakeet.snapshot", lambda *args: "/cached/onnx")
+    parakeet.ParakeetTranscriber(SttConfig(model=stt.DEFAULT_MODEL))
+    options = loaded[0]["sess_options"]
+    assert 1 <= options.intra_op_num_threads <= 4
+    assert options.get_session_config_entry("session.intra_op.allow_spinning") == "0"
 
 
 @pytest.mark.parametrize("version", ["v2", "v3"])

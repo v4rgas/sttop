@@ -53,6 +53,4 @@ def test_onnx_uses_the_pinned_snapshot(monkeypatch):
         load_model=lambda model, **kwargs: calls.append(kwargs)
     ))
     ParakeetTranscriber(SttConfig(model=DEFAULT_MODEL))
-    assert calls == [{
-        "path": "/cached/pinned-model", "providers": ["CPUExecutionProvider"]
-    }]
+    assert [call["path"] for call in calls] == ["/cached/pinned-model"]

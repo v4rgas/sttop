@@ -69,18 +69,25 @@ Choose explicitly with `sttop --backend mlx` or `sttop --backend onnx`, or set
 it falls back to ONNX if MLX dependencies are missing. Explicit MLX requests and
 model-loading failures report an error instead.
 
-Both engines download weights from Hugging Face on first use and reuse the
-local cache. ONNX uses `istupakov/parakeet-tdt-0.6b-v3-onnx`; MLX uses
-[`mlx-community/parakeet-tdt-0.6b-v3`](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3).
-Switching engines requires a separate model download. The existing default
-model name and the v2 ONNX alias map to their MLX equivalents automatically;
-other custom ONNX models continue to use ONNX in auto mode.
+The default model is [Parakeet Ultra](https://huggingface.co/moondream/parakeet-ultra),
+Moondream's post-trained Parakeet TDT 0.6B v3: same size and speed, lower
+word error rate. NVIDIA's v3 and v2 are still available with
+`--model nemo-parakeet-tdt-0.6b-v3` or `nemo-parakeet-tdt-0.6b-v2`.
 
-The built-in v2/v3 downloads are pinned to specific Hugging Face commits and
+Both engines download weights from Hugging Face on first use and reuse the
+local cache. ONNX uses `Masterx/parakeet-tdt-0.6b-ultra-onnx`; MLX uses
+[`selcukkubur/parakeet-ultra-mlx`](https://huggingface.co/selcukkubur/parakeet-ultra-mlx).
+Switching engines requires a separate model download. The built-in model names
+map to their MLX equivalents automatically; other custom ONNX models continue
+to use ONNX in auto mode.
+
+The built-in downloads are pinned to specific Hugging Face commits and
 limited to the required ONNX or Safetensors weights and configuration files.
-These are community conversions of NVIDIA weights, not NVIDIA-owned download
-repositories. The ONNX conversion is published by the `onnx-asr` maintainer;
-the MLX conversion is published by `mlx-community`. No Python code from model
+These are community conversions of NVIDIA and Moondream weights, not
+first-party download repositories. The v2/v3 ONNX conversions are published
+by the `onnx-asr` maintainer, and the Ultra one reuses those graphs with the
+Ultra weights; the v2/v3 MLX conversions are published by `mlx-community`.
+No Python code from model
 repositories is loaded. Custom `--model` overrides select your own source and
 are not covered by these built-in revision pins. Python dependencies are
 resolved with artifact hashes in `uv.lock` for `uv sync --locked` installs.

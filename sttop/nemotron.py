@@ -207,9 +207,9 @@ class NemotronStream:
     def load(cls, model_dir: Path, threads: int = 1) -> NemotronStream:
         import onnxruntime as ort
 
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = threads
-        options.inter_op_num_threads = 1
+        from .onnx import cpu_options
+
+        options = cpu_options(threads)
         providers = ["CPUExecutionProvider"]
 
         def session(name: str):

@@ -379,8 +379,9 @@ class NemotronDiarizer:
             from .nemotron import NemotronStream, fetch
 
             # Runs beside transcription, so it only has to keep up with it:
-            # two threads take a step from ~670 ms to ~380 ms, under Parakeet's
-            # time for the same line, without crowding it off the CPU.
+            # two threads keep a step under Parakeet's time for the same line.
+            # Both pools are capped and do not spin (see sttop.onnx), which
+            # is what keeps the pair from fighting over every core.
             stream = NemotronStream.load(fetch(), threads=2)
 
         self.config = config
